@@ -1,0 +1,309 @@
+//! The letter archive: a small SQLite database with one row per PDF letter, holding
+//! a reference to the file and its full text. The entry point is a PDF path; the text
+//! is read from the PDF itself with Apple's PDFKit, so any PDF with a text layer works.
+//! A full-text index (SQLite FTS5) makes the letters searchable.
+//!
+//! The database is reached through Diesel. Plain rows (`documents`) are read and written
+//! with Diesel's query methods, which the compiler checks against `schema.rs`. The search
+//! index is SQLite's own FTS5, which Diesel doesn't know, so that part stays raw SQL.
+
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
+
+use diesel::{
+    connection::SimpleConnection,
+    prelude::*,
+    sql_query,
+    sql_types::{BigInt, Bool, Text},
+};
+use objc2::AnyThread;
+use objc2_foundation::{NSString, NSURL};
+use objc2_pdf_kit::PDFDocument;
+use sha2::{Digest, Sha256};
+
+use crate::{language, schema::documents};
+
+// The tests live in `src/archive/tests.rs`.
+#[cfg(test)]
+mod tests;
+
+/// Where the text came from. Later, text saved straight from Vision could say "vision".
+const TEXT_SOURCE: &str = "pdfkit";
+
+/// One row per letter. `sha256` is `UNIQUE`: the same file can never be stored twice.
+/// `IF NOT EXISTS` makes it safe to run every time the database is opened.
+/// `created_at` is filled in by SQLite itself (in UTC).
+/// It must match `schema.rs`, which tells Diesel what this table looks like.
+const CREATE_DOCUMENTS: &str = "
+    CREATE TABLE IF NOT EXISTS documents (
+        id          INTEGER PRIMARY KEY,
+        file_path   TEXT NOT NULL,
+        sha256      TEXT NOT NULL UNIQUE,
+        text        TEXT NOT NULL,
+        text_source TEXT NOT NULL,
+        language    TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )";
+
+/// The search index over `documents.text`, built by SQLite's full-text engine FTS5.
+/// - A "virtual table": it looks like a table, but FTS5 runs it.
+/// - `content = 'documents'`: the index reads the text from `documents` instead of
+///   keeping a second copy; `content_rowid = 'id'` says which column links the two.
+/// - `trigram`: the text is indexed in pieces of three letters, so a search finds any part
+///   of a word ("steuer" finds "Einkommensteuerbescheid"), which German compounds need.
+///   Upper and lower case count the same; `remove_diacritics 1` lets "muller" find "Müller".
+///
+/// The triggers are small rules inside SQLite: whenever a row of `documents` is added,
+/// changed or deleted, they update the index too, so the Rust code can't forget it.
+const CREATE_SEARCH: &str = "
+    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+        text,
+        content = 'documents',
+        content_rowid = 'id',
+        tokenize = 'trigram remove_diacritics 1'
+    );
+    CREATE TRIGGER IF NOT EXISTS documents_fts_insert AFTER INSERT ON documents BEGIN
+        INSERT INTO documents_fts (rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS documents_fts_delete AFTER DELETE ON documents BEGIN
+        INSERT INTO documents_fts (documents_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS documents_fts_update AFTER UPDATE ON documents BEGIN
+        INSERT INTO documents_fts (documents_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO documents_fts (rowid, text) VALUES (new.id, new.text);
+    END;
+";
+
+/// The trigram index can't find anything shorter than three letters.
+const MIN_WORD_LEN: usize = 3;
+
+/// One letter found by `search`.
+/// `QueryableByName`: Diesel fills it from a raw SQL result, matching columns by name.
+/// Raw SQL has no schema to look at, so each field says its SQL type.
+#[derive(Debug, QueryableByName)]
+pub struct SearchHit {
+    #[diesel(sql_type = BigInt)]
+    pub id: i64,
+    #[diesel(sql_type = Text)]
+    pub file_path: String,
+    /// A short piece of the text around the match, with the match in [brackets].
+    #[diesel(sql_type = Text)]
+    pub snippet: String,
+}
+
+/// One stored letter, as read back from the database.
+/// `derive(Debug)` lets tests print it when an assertion fails.
+/// `Queryable, Selectable`: Diesel builds it from a row of `documents`, field by field
+/// (`created_at` is left out). `check_for_backend` makes the compiler check now that
+/// every field's type fits its SQLite column, with a clearer error if not.
+#[derive(Debug, Queryable, Selectable)]
+#[diesel(table_name = documents)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct Document {
+    pub id: i64,
+    pub file_path: String,
+    pub sha256: String,
+    pub text: String,
+    pub text_source: String,
+    pub language: String,
+}
+
+/// What `add_pdf` did. An `enum` is a value that is exactly one of several variants;
+/// here each variant also carries the letter's id.
+#[derive(Debug, PartialEq)]
+pub enum Added {
+    /// The letter was new and is now stored under this id.
+    New(i64),
+    /// The same file (same bytes, maybe another name) was stored before under this id.
+    AlreadyStored(i64),
+}
+
+/// The open data
+/// base and the folder it lives in.
+pub struct Archive {
+    db: SqliteConnection,
+}
+
+// `impl` holds the functions that belong to `Archive`. Those taking `self` are called
+// on an archive (`archive.add_pdf(..)`); the others build one (`Archive::open(..)`).
+// Most take `&mut self`: Diesel needs the connection to itself (`&mut`) while a query
+// runs, so the borrow checker guarantees no two queries share it at once.
+impl Archive {
+    /// Opens the database file, creating it if missing, and makes sure the table exists.
+    /// The connection closes by itself when the `Archive` goes out of scope (Rust's `Drop`).
+    pub fn new(db_file: &Path) -> Result<Self, Box<dyn Error>> {
+        let db_file = std::path::absolute(db_file)?;
+        let url = db_file.to_str().ok_or("database path is not UTF-8")?;
+        let mut db = SqliteConnection::establish(url)?;
+        let mut arch = Archive { db };
+        arch.db.batch_execute(CREATE_DOCUMENTS)?;
+        create_search_index(&mut arch.db)?;
+        Ok(arch)
+    }
+    pub fn open(db_file: &Path) -> Result<Self, Box<dyn Error>> {
+        let db_file = std::path::absolute(db_file)?;
+        if !db_file.exists() {
+            panic!("no '{}' db found", db_file.to_str().unwrap_or(""));
+        }
+        let url = db_file.to_str().ok_or("database path is not UTF-8")?;
+        let mut db = SqliteConnection::establish(url)?;
+        Ok(Archive { db })
+    }
+
+    /// The entry point: stores a PDF letter together with its text.
+    /// A file stored before is skipped, and its text is not read again.
+    pub fn add_pdf(&mut self, pdf: &Path) -> Result<Added, Box<dyn Error>> {
+        // Name the file in the error, so the user knows which one failed.
+        self.store(pdf)
+            .map_err(|e| format!("{}: {e}", pdf.display()).into())
+    }
+
+    fn store(&mut self, pdf: &Path) -> Result<Added, Box<dyn Error>> {
+        let hash = file_sha256(pdf)?;
+        if let Some(id) = self.find_by_hash(&hash)? {
+            return Ok(Added::AlreadyStored(id));
+        }
+        let text = extract_text(pdf)?;
+        // A tuple of `column.eq(value)` pairs is one new row. Diesel sends the values
+        // separately from the SQL, so text with quotes in it can never break (or inject
+        // into) the statement. `returning` hands back the id SQLite gave the row.
+        let id = diesel::insert_into(documents::table)
+            .values((
+                documents::file_path.eq( pdf.to_str().ok_or("path is not UTF-8")?),
+                documents::sha256.eq(&hash),
+                documents::text.eq(&text),
+                documents::text_source.eq(TEXT_SOURCE),
+                documents::language.eq(language::LETTERS.short),
+            ))
+            .returning(documents::id)
+            .get_result(&mut self.db)?;
+        Ok(Added::New(id))
+    }
+
+    /// The id of the letter with this fingerprint, if there is one.
+    fn find_by_hash(&mut self, hash: &str) -> QueryResult<Option<i64>> {
+        documents::table
+            .filter(documents::sha256.eq(hash)) // WHERE sha256 = ?
+            .select(documents::id) // SELECT id
+            .first(&mut self.db) // LIMIT 1, and run it
+            // `first` fails when there is no row; `optional` turns that into `None`.
+            .optional()
+    }
+
+    pub fn find_all(&mut self, limit: i64) -> QueryResult<Vec<Document>> {
+        documents::table
+            .select(Document::as_select())
+            .limit(limit)
+            .get_results(&mut self.db)
+    }
+
+    /// Reads one stored letter back, or `None` if there is no letter with this id.
+    pub fn document(&mut self, id: i64) -> QueryResult<Option<Document>> {
+        documents::table
+            .find(id) // WHERE id = ?, by the primary key
+            .select(Document::as_select()) // exactly the columns `Document` has
+            .first(&mut self.db)
+            .optional()
+    }
+
+    /// Finds the letters that contain every word typed, best match first. A word may be
+    /// part of a longer word. Words under three letters are skipped (see `search_query`).
+    pub fn search(&mut self, words: &str) -> QueryResult<Vec<SearchHit>> {
+        let Some(query) = search_query(words) else {
+            return Ok(Vec::new()); // nothing searchable was typed
+        };
+        // `snippet(..)` cuts out the text around the match: 64 pieces of the index, the
+        // most FTS5 allows; with `trigram` a piece is one letter, so about one line.
+        // `bm25(..)` scores how well a letter matches, lower is better.
+        // Both are FTS5's own SQL functions, so this query is raw SQL. The `AS` names
+        // match the fields of `SearchHit`; `bind` fills in the `?` with the query.
+        sql_query(
+            "SELECT documents.id AS id, documents.file_path AS file_path,
+                    snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
+             FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
+             WHERE documents_fts MATCH ?
+             ORDER BY bm25(documents_fts)",
+        )
+        .bind::<Text, _>(query)
+        .load(&mut self.db)
+    }
+
+
+}
+
+/// Creates the search index if it is missing. A database made before the index existed
+/// already has letters, so the new index is filled with them once (`rebuild`).
+fn create_search_index(db: &mut SqliteConnection) -> QueryResult<()> {
+    let existed = table_exists(db, "documents_fts")?;
+    db.batch_execute(CREATE_SEARCH)?; // `batch_execute`: several statements at once
+    if !existed {
+        sql_query("INSERT INTO documents_fts (documents_fts) VALUES ('rebuild')").execute(db)?;
+    }
+    Ok(())
+}
+
+/// The one column `table_exists` reads back. Even a single value needs a struct
+/// when it comes from raw SQL, so Diesel knows its name and type.
+#[derive(QueryableByName)]
+struct Exists {
+    #[diesel(sql_type = Bool)]
+    found: bool,
+}
+
+/// True if the database has a table with this name (`sqlite_master` lists them all).
+fn table_exists(db: &mut SqliteConnection, name: &str) -> QueryResult<bool> {
+    sql_query("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ?) AS found")
+        .bind::<Text, _>(name)
+        .get_result::<Exists>(db)
+        .map(|row| row.found)
+}
+
+/// Turns what the user typed into an FTS5 query in which every word must appear.
+/// Each word goes in double quotes, so characters like `-`, `:` or `*` count as plain
+/// text and not as FTS5 operators (unquoted, "4711-23" would be a syntax error).
+/// A `"` inside a word is written twice, the way FTS5 escapes it.
+/// Words under three letters are left out: the trigram index can't find them, and one
+/// of them would make the whole search find nothing. `None` if no word is left.
+fn search_query(words: &str) -> Option<String> {
+    let quoted: Vec<String> = words
+        .split_whitespace()
+        .filter(|word| word.chars().count() >= MIN_WORD_LEN)
+        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+        .collect();
+    if quoted.is_empty() {
+        None
+    } else {
+        Some(quoted.join(" ")) // words side by side mean AND in FTS5
+    }
+}
+
+/// Reads all the text of a PDF with Apple's PDFKit, page after page.
+/// Fails if there is no text (for example a scan without a text layer):
+/// such a letter would be useless for analysis, so it should not slip in unnoticed.
+pub fn extract_text(pdf: &Path) -> Result<String, Box<dyn Error>> {
+    let path = pdf.to_str().ok_or("path is not UTF-8")?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    // `alloc` reserves memory for the object, `initWithURL` fills it from the file;
+    // `None` means PDFKit could not open it. `unsafe`: Rust can't check Apple's code.
+    let document =
+        unsafe { PDFDocument::initWithURL(PDFDocument::alloc(), &url) }.ok_or("cannot open PDF")?;
+    let text = unsafe { document.string() }
+        .map(|text| text.to_string())
+        .unwrap_or_default();
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("PDF has no text (maybe a scan without a text layer)".into());
+    }
+    Ok(text.to_string())
+}
+
+/// The SHA-256 fingerprint of a file's bytes, as 64 hex characters.
+/// Same bytes give the same fingerprint, whatever the file is called.
+fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
+    let bytes = std::fs::read(path)?;
+    let digest = Sha256::digest(&bytes);
+    // Each byte becomes two hex digits, e.g. 10 -> "0a".
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
