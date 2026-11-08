@@ -291,7 +291,7 @@ fn test_add_pdf_template() {
 fn test_add_pdfs() {
     let mut archive = Archive::open(Path::new("data/archive.db")).unwrap();
     archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
-    archive.add_pdf(Path::new("data/IMG_7280.pdf")).unwrap();
+    archive.add_pdf(Path::new("9_sprachnachweis_integr_b1.jpg")).unwrap();
     let documents = archive.find_all(45).unwrap();
     assert!(found(&mut archive, "Mahnung").is_empty());
     assert!(documents.len() >= 2);
@@ -301,6 +301,8 @@ fn test_add_pdfs() {
 #[test]
 #[ignore]
 fn test_new() {
-    let mut archive = Archive::new(Path::new("data/archive.db")).unwrap();
+    // let mut archive = Archive::new(Path::new("data/archive.db")).unwrap();
+    let mut archive = Archive::open(Path::new("data/archive.db")).unwrap();
+    archive.add_pdf(Path::new("data/pdfs/9_sprachnachweis_integr_b1.jpg")).unwrap();
   
 }

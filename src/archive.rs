@@ -41,6 +41,7 @@ const CREATE_DOCUMENTS: &str = "
         id          INTEGER PRIMARY KEY,
         file_path   TEXT NOT NULL,
         sha256      TEXT NOT NULL UNIQUE,
+        category    TEXT,
         text        TEXT NOT NULL,
         text_source TEXT NOT NULL,
         language    TEXT NOT NULL,
@@ -108,6 +109,7 @@ pub struct Document {
     pub text: String,
     pub text_source: String,
     pub language: String,
+    pub category: String,
 }
 
 /// What `add_pdf` did. An `enum` is a value that is exactly one of several variants;
@@ -176,6 +178,7 @@ impl Archive {
                 documents::text.eq(&text),
                 documents::text_source.eq(TEXT_SOURCE),
                 documents::language.eq(language::LETTERS.short),
+                documents::category.eq("unknown"),
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;

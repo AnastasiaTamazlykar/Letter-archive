@@ -7,5 +7,6 @@ diesel::table! {
         text_source -> Text,
         language -> Text,
         created_at -> Text,
+        category -> Text,
     }
 }

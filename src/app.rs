@@ -4,11 +4,18 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use crate::{convert::Conversion, pipeline};
 use crate::archive::{Archive, Document};
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
+/// The letter archive's database file.
+const DB_FILE: &str = "data/archive.db";
+/// How many characters of a letter's text the PDF list shows.
+const TEXT_PREVIEW_CHARS: usize = 100;
+/// Height of one row of the PDF table, in points.
+const PDF_ROW_HEIGHT: f32 = 20.0;
 /// Height of the drop area, in points.
 const DROP_AREA_HEIGHT: f32 = 80.0;
 /// Size of a thumbnail on screen, in points (the longer side).
@@ -54,9 +61,21 @@ enum CardClick {
     MoveLater,
 }
 
+/// The pages of the window, picked with the buttons at the top.
+/// `PartialEq` lets egui compare tabs, to know which button to show as chosen.
+/// `#[default]` marks the tab `Default` gives: the archive is shown first.
+#[derive(Default, PartialEq)]
+enum Tab {
+    #[default]
+    Archive,
+    Images,
+}
+
 /// Everything the window remembers between frames.
 #[derive(Default)]
 pub struct App {
+    /// The page shown now.
+    tab: Tab,
     pdfs: Vec<Document>,
     /// The images added so far. Their order here is the page order in the PDF.
     pictures: Vec<Picture>,
@@ -77,13 +96,17 @@ impl eframe::App for App {
         self.check_conversion();
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Paper Archive");
-            display_pdfs(ui, &self.pdfs);
-            drop_area(ui);
-            ui.add_space(8.0);
-            self.convert_bar(ui);
-            ui.add_space(8.0);
-            self.picture_grid(ui);
+            ui.horizontal(|ui| {
+                ui.heading("Paper Archive");
+                // `selectable_value` sets `self.tab` to the given tab when clicked.
+                ui.selectable_value(&mut self.tab, Tab::Archive, "Archive");
+                ui.selectable_value(&mut self.tab, Tab::Images, "Images → PDF");
+            });
+            ui.separator();
+            match self.tab {
+                Tab::Archive => self.archive_tab(ui),
+                Tab::Images => self.images_tab(ui),
+            }
         });
         self.show_preview(ui.ctx(), preview_size);
     }
@@ -92,7 +115,7 @@ impl eframe::App for App {
 // A second `impl` block: the app's own methods, apart from the ones `eframe::App` requires.
 impl App {
     pub fn set_pdfs(&mut self) {
-        let res = Archive::open(Path::new("data/archive.db"));
+        let res = Archive::open(Path::new(DB_FILE));
         if let Err(err) = res{   panic!("{}", err)};
         let first_50 =res.unwrap().find_all(50);
         if let Err(err) = first_50{   panic!("{}", err)};
@@ -115,6 +138,58 @@ impl App {
         for path in dropped {
             self.add_file(ctx, path);
         }
+    }
+
+    /// The main page: a + button to add a PDF, and the table of stored PDFs.
+    fn archive_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Processed PDFs");
+            if ui.button("+").on_hover_text("Add a PDF to the archive").clicked() {
+                self.pick_pdf();
+            }
+        });
+        display_pdfs(ui, &self.pdfs);
+    }
+
+    /// The images page: drop images, tick them and save them as one PDF.
+    fn images_tab(&mut self, ui: &mut egui::Ui) {
+        drop_area(ui, "Drop images here (HEIC, PNG, JPEG)", "Let go to add the images");
+        ui.add_space(8.0);
+        self.convert_bar(ui);
+        ui.add_space(8.0);
+        self.picture_grid(ui);
+    }
+
+    /// Asks for a PDF with the macOS Open panel and stores it; does nothing on Cancel.
+    fn pick_pdf(&mut self) {
+        let Some(pdf) = rfd::FileDialog::new()
+            .set_title("Add PDF to archive")
+            .add_filter("PDF", &["pdf"])
+            .pick_file()
+        else {
+            return;
+        };
+        // `&[pdf]`: a list of one, borrowed as a slice, which is what `store_pdfs` takes.
+        self.store_pdfs(&[pdf]);
+    }
+
+    /// Stores the files in the archive, then reloads the list of PDFs.
+    /// A file stored before is skipped by `add_pdf`; failures (not a PDF, no text) are printed.
+    fn store_pdfs(&mut self, pdfs: &[PathBuf]) {
+        let mut archive = match Archive::open(Path::new(DB_FILE)) {
+            Ok(archive) => archive,
+            Err(error) => {
+                eprintln!("cannot open the archive: {error}");
+                return;
+            }
+        };
+        for pdf in pdfs {
+            if let Err(error) = archive.add_pdf(pdf) {
+                eprintln!("cannot store {error}"); // the error already names the file
+            }
+        }
+        // `archive` is only a local variable, so `self` is free to be borrowed again here.
+        self.set_pdfs();
     }
 
     /// Adds one file if it is an image and not in the list yet, and makes its thumbnail.
@@ -191,6 +266,10 @@ impl App {
         if conversion.is_finished() {
             self.status = conversion.summary();
             self.conversion = None;
+            // Untick all images, so the button goes back to "Save 0 as PDF…".
+            for picture in &mut self.pictures {
+                picture.selected = false;
+            }
         }
     }
 
@@ -371,29 +450,68 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
 }
 
 
+/// The stored letters as a table that fits the window's width: the file name, the start
+/// of the text, and the category. Cut cells end in "…"; hovering the name shows the path.
 fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
-    ui.label("Processed PDFs");
-    egui::Grid::new("Processed PDFs").show(ui, |ui| {
-        ui.strong("file path");
-        ui.strong("Pages");
-        ui.strong("Created");
-        ui.end_row();
-        for pdf in pdfs {
-            ui.label(&pdf.file_path);
-            ui.end_row();
-        }
-    });
+    // Unlike `Grid`, which grows with its longest text, `TableBuilder` gives each column
+    // a width, and `clip` cuts what doesn't fit. Rows scroll inside the table.
+    TableBuilder::new(ui)
+        .striped(true) // every other row shaded, so rows are easier to follow
+        .column(Column::initial(200.0).resizable(true).clip(true)) // file name
+        .column(Column::remainder().clip(true)) // preview: all the width that is left
+        .column(Column::auto()) // category: as wide as its text
+        .header(PDF_ROW_HEIGHT, |mut header| {
+            // Each `col` closure draws one cell; `;` makes it return `()`, as `col` wants.
+            header.col(|ui| {
+                ui.strong("File");
+            });
+            header.col(|ui| {
+                ui.strong("Preview");
+            });
+            header.col(|ui| {
+                ui.strong("Category");
+            });
+        })
+        .body(|mut body| {
+            for pdf in pdfs {
+                body.row(PDF_ROW_HEIGHT, |mut row| {
+                    row.col(|ui| {
+                        let name = file_name(Path::new(&pdf.file_path));
+                        ui.add(egui::Label::new(name).truncate())
+                            .on_hover_text(&pdf.file_path);
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(text_preview(&pdf.text)).truncate());
+                    });
+                    row.col(|ui| {
+                        ui.label(&pdf.category);
+                    });
+                });
+            }
+        });
 }
-/// A box asking for images; it lights up while files are dragged over the window.
-fn drop_area(ui: &mut egui::Ui) {
+
+/// The first `TEXT_PREVIEW_CHARS` characters of the text on one line, with "…" if cut.
+fn text_preview(text: &str) -> String {
+    // `split_whitespace` + `join` turns line breaks and runs of spaces into single spaces.
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Count characters, not bytes: "ü" takes two bytes in UTF-8, and cutting a string
+    // in the middle of a character (`&one_line[..100]`) would make Rust panic.
+    let preview: String = one_line.chars().take(TEXT_PREVIEW_CHARS).collect();
+    if preview.len() < one_line.len() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+/// A box asking for files with `text`; while files are dragged over the window it
+/// lights up and shows `hover_text`.
+fn drop_area(ui: &mut egui::Ui, text: &str, hover_text: &str) {
     let hovering = ui.ctx().input(|input| !input.raw.hovered_files.is_empty());
     let (text, fill) = if hovering {
-        ("Let go to add the images", ui.visuals().selection.bg_fill)
+        (hover_text, ui.visuals().selection.bg_fill)
     } else {
-        (
-            "Drop images here (HEIC, PNG, JPEG)",
-            egui::Color32::TRANSPARENT,
-        )
+        (text, egui::Color32::TRANSPARENT)
     };
 
     egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
