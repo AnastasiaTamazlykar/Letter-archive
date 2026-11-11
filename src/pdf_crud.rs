@@ -21,16 +21,15 @@ use diesel::{
 use objc2::AnyThread;
 use objc2_foundation::{NSString, NSURL};
 use objc2_pdf_kit::PDFDocument;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::summarize_with_ai::ask_model;
 use crate::{language, schema::documents};
 
 // The tests live in `src/archive/tests.rs`.
 #[cfg(test)]
 mod tests;
-
-/// Where the text came from. Later, text saved straight from Vision could say "vision".
-const TEXT_SOURCE: &str = "pdfkit";
 
 /// One row per letter. `sha256` is `UNIQUE`: the same file can never be stored twice.
 /// `IF NOT EXISTS` makes it safe to run every time the database is opened.
@@ -43,7 +42,7 @@ const CREATE_DOCUMENTS: &str = "
         sha256      TEXT NOT NULL UNIQUE,
         category    TEXT,
         text        TEXT NOT NULL,
-        text_source TEXT NOT NULL,
+        summary TEXT NOT NULL,
         language    TEXT NOT NULL,
         created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )";
@@ -94,6 +93,44 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+#[derive(Debug, PartialEq, Deserialize)]
+pub enum LetterCategory {
+    Finanzamt,
+    Rundfunkbeitrag,
+    Gesundheit,
+    Zahnarzt,
+    AutoVersicherung,
+    Datarobot,
+    Sonstiges,
+}
+
+impl LetterCategory {
+    pub const ALL: [LetterCategory; 7] = [
+        LetterCategory::Finanzamt,
+        LetterCategory::Rundfunkbeitrag,
+        LetterCategory::Gesundheit,
+        LetterCategory::Zahnarzt,
+        LetterCategory::AutoVersicherung,
+        LetterCategory::Datarobot,
+        LetterCategory::Sonstiges,
+    ];
+
+    pub fn from_name(name: &str) -> Option<LetterCategory> {
+        Self::ALL.into_iter().find(|cat| cat.name() == name)
+    }
+
+    pub fn name(&self) -> &'static str {
+        match &self {
+            LetterCategory::Finanzamt => "Finanzamt",
+            LetterCategory::Rundfunkbeitrag => "Rundfunkbeitrag",
+            LetterCategory::AutoVersicherung => "AutoVersicherung",
+            LetterCategory::Gesundheit => "Gesundheit",
+            LetterCategory::Zahnarzt => "Zahnarzt",
+            LetterCategory::Datarobot => "Datarobot",
+            LetterCategory::Sonstiges => "Sonstiges",
+        }
+    }
+}
 /// One stored letter, as read back from the database.
 /// `derive(Debug)` lets tests print it when an assertion fails.
 /// `Queryable, Selectable`: Diesel builds it from a row of `documents`, field by field
@@ -107,13 +144,11 @@ pub struct Document {
     pub file_path: String,
     pub sha256: String,
     pub text: String,
-    pub text_source: String,
+    pub summary: String,
     pub language: String,
     pub category: String,
 }
 
-/// What `add_pdf` did. An `enum` is a value that is exactly one of several variants;
-/// here each variant also carries the letter's id.
 #[derive(Debug, PartialEq)]
 pub enum Added {
     /// The letter was new and is now stored under this id.
@@ -124,7 +159,7 @@ pub enum Added {
 
 /// The open data
 /// base and the folder it lives in.
-pub struct Archive {
+pub struct PdfCrud {
     db: SqliteConnection,
 }
 
@@ -132,14 +167,14 @@ pub struct Archive {
 // on an archive (`archive.add_pdf(..)`); the others build one (`Archive::open(..)`).
 // Most take `&mut self`: Diesel needs the connection to itself (`&mut`) while a query
 // runs, so the borrow checker guarantees no two queries share it at once.
-impl Archive {
+impl PdfCrud {
     /// Opens the database file, creating it if missing, and makes sure the table exists.
     /// The connection closes by itself when the `Archive` goes out of scope (Rust's `Drop`).
     pub fn new(db_file: &Path) -> Result<Self, Box<dyn Error>> {
         let db_file = std::path::absolute(db_file)?;
         let url = db_file.to_str().ok_or("database path is not UTF-8")?;
         let mut db = SqliteConnection::establish(url)?;
-        let mut arch = Archive { db };
+        let mut arch = PdfCrud { db };
         arch.db.batch_execute(CREATE_DOCUMENTS)?;
         create_search_index(&mut arch.db)?;
         Ok(arch)
@@ -151,7 +186,7 @@ impl Archive {
         }
         let url = db_file.to_str().ok_or("database path is not UTF-8")?;
         let mut db = SqliteConnection::establish(url)?;
-        Ok(Archive { db })
+        Ok(PdfCrud { db })
     }
 
     /// The entry point: stores a PDF letter together with its text.
@@ -168,17 +203,18 @@ impl Archive {
             return Ok(Added::AlreadyStored(id));
         }
         let text = extract_text(pdf)?;
+        let model_answer = ask_model(&text)?;
         // A tuple of `column.eq(value)` pairs is one new row. Diesel sends the values
         // separately from the SQL, so text with quotes in it can never break (or inject
         // into) the statement. `returning` hands back the id SQLite gave the row.
         let id = diesel::insert_into(documents::table)
             .values((
-                documents::file_path.eq( pdf.to_str().ok_or("path is not UTF-8")?),
+                documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?),
                 documents::sha256.eq(&hash),
                 documents::text.eq(&text),
-                documents::text_source.eq(TEXT_SOURCE),
+                documents::summary.eq(model_answer.summary),
                 documents::language.eq(language::LETTERS.short),
-                documents::category.eq("unknown"),
+                documents::category.eq(model_answer.category.name()),
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;
@@ -232,8 +268,6 @@ impl Archive {
         .bind::<Text, _>(query)
         .load(&mut self.db)
     }
-
-
 }
 
 /// Creates the search index if it is missing. A database made before the index existed

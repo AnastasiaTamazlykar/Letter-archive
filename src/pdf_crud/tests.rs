@@ -12,7 +12,7 @@ use crate::pipeline::FONT;
 // A method added to `Archive` here, in the tests file: Rust allows an `impl` block in any
 // module of the same crate, and as a child module this one may call the private
 // `with_connection`. So `archive.rs` itself carries no test-only code.
-impl Archive {
+impl PdfCrud {
     /// A database that lives only in memory and is gone when dropped.
     /// `:memory:` is SQLite's special name for that.
     fn in_memory() -> Result<Self, Box<dyn Error>> {
@@ -77,7 +77,7 @@ fn test_add_pdf_stores_text_and_relative_path() {
     let folder = test_folder("store");
     let pdf = folder.join("brief.pdf");
     write_pdf(&pdf, &LETTER);
-    let mut archive = Archive::in_memory().unwrap();
+    let mut archive = PdfCrud::in_memory().unwrap();
 
     let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
         panic!("expected a new letter");
@@ -87,7 +87,6 @@ fn test_add_pdf_stores_text_and_relative_path() {
     assert_eq!(document.file_path, "brief.pdf");
     assert_eq!(document.sha256.len(), 64);
     assert!(document.text.contains("Frau Müller"));
-    assert_eq!(document.text_source, "pdfkit");
     assert_eq!(document.language, "de");
 }
 
@@ -95,7 +94,7 @@ fn test_add_pdf_stores_text_and_relative_path() {
 fn test_add_pdf_keeps_full_path_outside_folder() {
     let pdf = test_folder("outside_pdf").join("brief.pdf");
     write_pdf(&pdf, &LETTER);
-    let mut archive = Archive::in_memory().unwrap();
+    let mut archive = PdfCrud::in_memory().unwrap();
 
     let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
         panic!("expected a new letter");
@@ -112,7 +111,7 @@ fn test_add_pdf_skips_a_letter_stored_before() {
     write_pdf(&pdf, &LETTER);
     let copy = folder.join("copy.pdf");
     std::fs::copy(&pdf, &copy).unwrap();
-    let mut archive = Archive::in_memory().unwrap();
+    let mut archive = PdfCrud::in_memory().unwrap();
 
     let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
         panic!("expected a new letter");
@@ -123,7 +122,7 @@ fn test_add_pdf_skips_a_letter_stored_before() {
 
 #[test]
 fn test_add_pdf_names_the_missing_file() {
-    let mut archive = Archive::in_memory().unwrap();
+    let mut archive = PdfCrud::in_memory().unwrap();
     let error = archive
         .add_pdf(Path::new("/no/such/letter.pdf"))
         .unwrap_err();
@@ -138,12 +137,12 @@ fn test_open_keeps_letters_on_disk() {
     write_pdf(&pdf, &LETTER);
     let db_file = folder.join("archive.db");
 
-    let id = match Archive::open(&db_file).unwrap().add_pdf(&pdf).unwrap() {
+    let id = match PdfCrud::open(&db_file).unwrap().add_pdf(&pdf).unwrap() {
         Added::New(id) => id,
         other => panic!("expected a new letter, got {other:?}"),
     }; // the first archive is dropped here, which closes the database
 
-    let mut archive = Archive::open(&db_file).unwrap();
+    let mut archive = PdfCrud::open(&db_file).unwrap();
     assert!(archive.document(id).unwrap().is_some());
 }
 
@@ -157,9 +156,9 @@ const TAX_LETTER: [&str; 4] = [
 ];
 
 /// An archive in memory holding these letters, each as its own PDF; and their ids.
-fn archive_with(name: &str, letters: &[&[&str]]) -> (Archive, Vec<i64>) {
+fn archive_with(name: &str, letters: &[&[&str]]) -> (PdfCrud, Vec<i64>) {
     let folder = test_folder(name);
-    let mut archive = Archive::in_memory().unwrap();
+    let mut archive = PdfCrud::in_memory().unwrap();
     let mut ids = Vec::new();
     for (number, lines) in letters.iter().enumerate() {
         let pdf = folder.join(format!("letter_{number}.pdf"));
@@ -173,7 +172,7 @@ fn archive_with(name: &str, letters: &[&[&str]]) -> (Archive, Vec<i64>) {
 }
 
 /// The ids of the letters found, in the order `search` gives them.
-fn found(archive: &mut Archive, words: &str) -> Vec<i64> {
+fn found(archive: &mut PdfCrud, words: &str) -> Vec<i64> {
     let hits = archive.search(words).unwrap();
     hits.iter().map(|hit| hit.id).collect()
 }
@@ -262,14 +261,13 @@ fn test_open_indexes_letters_stored_before() {
             documents::file_path.eq("alt.pdf"),
             documents::sha256.eq("abc"),
             documents::text.eq("Brief vom Finanzamt"),
-            documents::text_source.eq("pdfkit"),
             documents::language.eq("de"),
         ))
         .execute(&mut old)
         .unwrap();
     drop(old); // closes the database, like the app quitting
 
-    let mut archive = Archive::open(&db_file).unwrap();
+    let mut archive = PdfCrud::open(&db_file).unwrap();
     assert_eq!(found(&mut archive, "Finanzamt").len(), 1);
 }
 
@@ -278,7 +276,7 @@ fn test_open_indexes_letters_stored_before() {
 #[test]
 #[ignore]
 fn test_add_pdf_template() {
-    let mut archive = Archive::open(Path::new("data/archive.db")).unwrap();
+    let mut archive = PdfCrud::open(Path::new("data/archive.db")).unwrap();
     let added = archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
     archive.add_pdf(Path::new("data/IMG_7280.pdf")).unwrap();
     let (Added::New(id) | Added::AlreadyStored(id)) = added;
@@ -289,7 +287,7 @@ fn test_add_pdf_template() {
 #[test]
 #[ignore]
 fn test_add_pdfs() {
-    let mut archive = Archive::open(Path::new("data/archive.db")).unwrap();
+    let mut archive = PdfCrud::open(Path::new("data/archive.db")).unwrap();
     archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
     archive.add_pdf(Path::new("9_sprachnachweis_integr_b1.jpg")).unwrap();
     let documents = archive.find_all(45).unwrap();
@@ -302,7 +300,7 @@ fn test_add_pdfs() {
 #[ignore]
 fn test_new() {
     // let mut archive = Archive::new(Path::new("data/archive.db")).unwrap();
-    let mut archive = Archive::open(Path::new("data/archive.db")).unwrap();
-    archive.add_pdf(Path::new("data/pdfs/9_sprachnachweis_integr_b1.jpg")).unwrap();
+    let mut archive = PdfCrud::new(Path::new("data/archive.db")).unwrap();
+    // archive.add_pdf(Path::new("data/pdfs/9_sprachnachweis_integr_b1.jpg")).unwrap();
   
 }

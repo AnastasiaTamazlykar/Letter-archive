@@ -6,7 +6,7 @@
 
 // `super::*` brings in everything `pipeline.rs` can see, private items included.
 use super::*;
-use crate::archive::extract_text;
+use crate::pdf_crud::extract_text;
 
 /// The two test photos in `data/`, and a heading Vision reads on each one.
 const LETTER_A: &str = "IMG_9549.HEIC";

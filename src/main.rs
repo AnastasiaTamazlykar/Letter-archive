@@ -4,11 +4,13 @@ mod app;
 // Not called from the window yet, only from its tests; `allow` silences the
 // "never used" warnings until it is.
 #[allow(dead_code)]
-mod archive;
+mod pdf_crud;
 mod convert;
 mod language;
 mod pipeline;
 mod schema;
+
+mod summarize_with_ai;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();

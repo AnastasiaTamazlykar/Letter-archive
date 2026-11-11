@@ -4,7 +4,7 @@ diesel::table! {
         file_path -> Text,
         sha256 -> Text,
         text -> Text,
-        text_source -> Text,
+        summary -> Text,
         language -> Text,
         created_at -> Text,
         category -> Text,

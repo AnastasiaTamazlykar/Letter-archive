@@ -9,7 +9,7 @@ use objc2_pdf_kit::PDFDocument;
 
 // `super::*` brings in everything `pdf.rs` can see, private items included.
 use super::*;
-use crate::archive::extract_text;
+use crate::pdf_crud::extract_text;
 
 // ── Helpers ──
 
