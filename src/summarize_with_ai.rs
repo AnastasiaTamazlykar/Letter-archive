@@ -41,12 +41,6 @@ pub fn ask_model(document_text: &str) -> Result<LLMAnswer, Box<dyn Error>> {
             .as_str()
             .ok_or("server response has no content")?,
     )?;
-
-    let answer: Parsed = serde_json::from_str(
-        &response["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or("server response has no content")?,
-    )?;
     Ok(LLMAnswer {
         summary: answer.summary,
         category: LetterCategory::from_name(answer.category.as_str())

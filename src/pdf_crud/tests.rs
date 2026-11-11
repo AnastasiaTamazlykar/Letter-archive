@@ -1,7 +1,7 @@
 //! Tests for the letter archive. The test PDFs are written here with real text, so the
 //! tests need no photos and no Vision; most use a database that lives only in memory.
 
-use std::{fs::File, io::BufWriter};
+use std::{fs::File, io::BufWriter, path::PathBuf};
 
 use printpdf::{Mm, PdfDocument as NewPdf};
 
@@ -9,14 +9,16 @@ use printpdf::{Mm, PdfDocument as NewPdf};
 use super::*;
 use crate::pipeline::FONT;
 
-// A method added to `Archive` here, in the tests file: Rust allows an `impl` block in any
-// module of the same crate, and as a child module this one may call the private
-// `with_connection`. So `archive.rs` itself carries no test-only code.
+// A method added to `PdfCrud` here, in the tests file: Rust allows an `impl` block in any
+// module of the same crate, and as a child module this one may set the private `db`
+// field. So `pdf_crud.rs` itself carries no test-only code.
 impl PdfCrud {
     /// A database that lives only in memory and is gone when dropped.
     /// `:memory:` is SQLite's special name for that.
     fn in_memory() -> Result<Self, Box<dyn Error>> {
-        Ok(Self{db:SqliteConnection::establish(":memory:")?})
+        Ok(Self {
+            db: SqliteConnection::establish(":memory:")?,
+        })
     }
 }
 
@@ -280,7 +282,7 @@ fn test_add_pdf_template() {
     let added = archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
     archive.add_pdf(Path::new("data/IMG_7280.pdf")).unwrap();
     let (Added::New(id) | Added::AlreadyStored(id)) = added;
-    let documents = archive.find_all(45).unwrap();
+    archive.find_all(45).unwrap();
     let document = archive.document(id).unwrap().unwrap();
     println!("{added:?}: {}\n\n{}", document.file_path, document.text);
 }
@@ -289,18 +291,16 @@ fn test_add_pdf_template() {
 fn test_add_pdfs() {
     let mut archive = PdfCrud::open(Path::new("data/archive.db")).unwrap();
     archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
-    archive.add_pdf(Path::new("9_sprachnachweis_integr_b1.jpg")).unwrap();
+    archive
+        .add_pdf(Path::new("9_sprachnachweis_integr_b1.jpg"))
+        .unwrap();
     let documents = archive.find_all(45).unwrap();
     assert!(found(&mut archive, "Mahnung").is_empty());
     assert!(documents.len() >= 2);
 }
 
-
 #[test]
 #[ignore]
 fn test_new() {
-    // let mut archive = Archive::new(Path::new("data/archive.db")).unwrap();
-    let mut archive = PdfCrud::new(Path::new("data/archive.db")).unwrap();
-    // archive.add_pdf(Path::new("data/pdfs/9_sprachnachweis_integr_b1.jpg")).unwrap();
-  
+    PdfCrud::new(Path::new("data/archive.db")).unwrap();
 }

@@ -3,7 +3,6 @@
 
 use crate::pdf_crud::{Document, PdfCrud};
 use crate::{convert::Conversion, pipeline};
-use diesel::QueryResult;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::error::Error;
@@ -13,8 +12,6 @@ use std::path::{Path, PathBuf};
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
 /// The letter archive's database file.
 const DB_FILE: &str = "data/archive.db";
-/// How many characters of a letter's text the PDF list shows.
-const TEXT_PREVIEW_CHARS: usize = 100;
 /// Height of one row of the PDF table, in points.
 const PDF_ROW_HEIGHT: f32 = 60.0;
 /// Height of the drop area, in points.
@@ -116,7 +113,7 @@ impl eframe::App for App {
 // A second `impl` block: the app's own methods, apart from the ones `eframe::App` requires.
 impl App {
     fn load_pdfs(limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
-        let mut pdf_crud = &mut PdfCrud::open(Path::new(DB_FILE))?;
+        let mut pdf_crud = PdfCrud::open(Path::new(DB_FILE))?;
         Ok(pdf_crud.find_all(limit)?)
     }
 
@@ -463,8 +460,8 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The stored letters as a table that fits the window's width: the file name, the start
-/// of the text, and the category. Cut cells end in "…"; hovering the name shows the path.
+/// The stored letters as a table that fits the window's width: the file name, the
+/// category and the summary. Hovering the name shows the path; the summary wraps.
 fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
     // Unlike `Grid`, which grows with its longest text, `TableBuilder` gives each column
     // a width, and `clip` cuts what doesn't fit. Rows scroll inside the table.
@@ -472,8 +469,7 @@ fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
         .striped(true)
         .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::initial(120.0).resizable(true).clip(true))
-        .column(Column::remainder().clip(true)
-       )
+        .column(Column::remainder().clip(true))
         .header(PDF_ROW_HEIGHT, |mut header| {
             // Each `col` closure draws one cell; `;` makes it return `()`, as `col` wants.
             header.col(|ui| {
@@ -498,7 +494,8 @@ fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
                         ui.label(&pdf.category);
                     });
                     row.col(|ui| {
-                        ui.add(egui::Label::new(&pdf.summary).wrap()).on_hover_text(&pdf.summary);
+                        ui.add(egui::Label::new(&pdf.summary).wrap())
+                            .on_hover_text(&pdf.summary);
                     });
                 });
             }

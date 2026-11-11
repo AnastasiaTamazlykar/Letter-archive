@@ -7,10 +7,7 @@
 //! with Diesel's query methods, which the compiler checks against `schema.rs`. The search
 //! index is SQLite's own FTS5, which Diesel doesn't know, so that part stays raw SQL.
 
-use std::{
-    error::Error,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, path::Path};
 
 use diesel::{
     connection::SimpleConnection,
@@ -27,7 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::summarize_with_ai::ask_model;
 use crate::{language, schema::documents};
 
-// The tests live in `src/archive/tests.rs`.
+// The tests live in `src/pdf_crud/tests.rs`.
 #[cfg(test)]
 mod tests;
 
@@ -157,23 +154,22 @@ pub enum Added {
     AlreadyStored(i64),
 }
 
-/// The open data
-/// base and the folder it lives in.
+/// The open database.
 pub struct PdfCrud {
     db: SqliteConnection,
 }
 
-// `impl` holds the functions that belong to `Archive`. Those taking `self` are called
-// on an archive (`archive.add_pdf(..)`); the others build one (`Archive::open(..)`).
+// `impl` holds the functions that belong to `PdfCrud`. Those taking `self` are called
+// on one (`pdf_crud.add_pdf(..)`); the others build one (`PdfCrud::open(..)`).
 // Most take `&mut self`: Diesel needs the connection to itself (`&mut`) while a query
 // runs, so the borrow checker guarantees no two queries share it at once.
 impl PdfCrud {
     /// Opens the database file, creating it if missing, and makes sure the table exists.
-    /// The connection closes by itself when the `Archive` goes out of scope (Rust's `Drop`).
+    /// The connection closes by itself when the `PdfCrud` goes out of scope (Rust's `Drop`).
     pub fn new(db_file: &Path) -> Result<Self, Box<dyn Error>> {
         let db_file = std::path::absolute(db_file)?;
         let url = db_file.to_str().ok_or("database path is not UTF-8")?;
-        let mut db = SqliteConnection::establish(url)?;
+        let db = SqliteConnection::establish(url)?;
         let mut arch = PdfCrud { db };
         arch.db.batch_execute(CREATE_DOCUMENTS)?;
         create_search_index(&mut arch.db)?;
@@ -185,7 +181,7 @@ impl PdfCrud {
             panic!("no '{}' db found", db_file.to_str().unwrap_or(""));
         }
         let url = db_file.to_str().ok_or("database path is not UTF-8")?;
-        let mut db = SqliteConnection::establish(url)?;
+        let db = SqliteConnection::establish(url)?;
         Ok(PdfCrud { db })
     }
 

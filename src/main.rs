@@ -1,12 +1,12 @@
 //! Starts the app window. The photo → PDF work lives in `pipeline.rs`.
 
 mod app;
-// Not called from the window yet, only from its tests; `allow` silences the
-// "never used" warnings until it is.
-#[allow(dead_code)]
-mod pdf_crud;
+// The window only lists and adds letters so far; search, `new` and `document` are
+// used by the tests only. `allow` silences their "never used" warnings until it is.
 mod convert;
 mod language;
+#[allow(dead_code)]
+mod pdf_crud;
 mod pipeline;
 mod schema;
 
