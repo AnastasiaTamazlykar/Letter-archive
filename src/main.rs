@@ -14,7 +14,7 @@ mod summarize_with_ai;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();
-    let mut app = app::App::default();
+    let mut app = app::App::new();
     app.set_pdfs();
     eframe::run_native(
         "Paper Archive",

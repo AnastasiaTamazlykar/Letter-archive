@@ -76,19 +76,6 @@ const CREATE_SEARCH: &str = "
 /// The trigram index can't find anything shorter than three letters.
 const MIN_WORD_LEN: usize = 3;
 
-/// One letter found by `search`.
-/// `QueryableByName`: Diesel fills it from a raw SQL result, matching columns by name.
-/// Raw SQL has no schema to look at, so each field says its SQL type.
-#[derive(Debug, QueryableByName)]
-pub struct SearchHit {
-    #[diesel(sql_type = BigInt)]
-    pub id: i64,
-    #[diesel(sql_type = Text)]
-    pub file_path: String,
-    /// A short piece of the text around the match, with the match in [brackets].
-    #[diesel(sql_type = Text)]
-    pub snippet: String,
-}
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum LetterCategory {
@@ -128,11 +115,6 @@ impl LetterCategory {
         }
     }
 }
-/// One stored letter, as read back from the database.
-/// `derive(Debug)` lets tests print it when an assertion fails.
-/// `Queryable, Selectable`: Diesel builds it from a row of `documents`, field by field
-/// (`created_at` is left out). `check_for_backend` makes the compiler check now that
-/// every field's type fits its SQLite column, with a clearer error if not.
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = documents)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -144,6 +126,22 @@ pub struct Document {
     pub summary: String,
     pub language: String,
     pub category: String,
+}
+
+
+#[derive(Debug, QueryableByName)]
+pub struct SearchHit {
+    #[diesel(sql_type = BigInt)]
+    pub id: i64,
+    #[diesel(sql_type = Text)]
+    pub file_path: String,
+    /// A short piece of the text around the match, with the match in [brackets].
+    #[diesel(sql_type = Text)]
+    pub snippet: String,
+    #[diesel(sql_type = Text)]
+    pub category: String,
+    #[diesel(sql_type = Text)]
+    pub summary: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -254,8 +252,10 @@ impl PdfCrud {
         // `bm25(..)` scores how well a letter matches, lower is better.
         // Both are FTS5's own SQL functions, so this query is raw SQL. The `AS` names
         // match the fields of `SearchHit`; `bind` fills in the `?` with the query.
+
         sql_query(
-            "SELECT documents.id AS id, documents.file_path AS file_path,
+            "SELECT documents.id AS id, documents.summary AS  summary,
+            documents.category as category, documents.file_path AS file_path,
                     snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
              FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
              WHERE documents_fts MATCH ?

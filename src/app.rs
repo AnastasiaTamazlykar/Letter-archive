@@ -1,10 +1,10 @@
 //! The app window: drop images on it to see them as thumbnails; click one to see it large;
 //! put them in order, tick some and save them as one PDF.
 
-use crate::pdf_crud::{Document, PdfCrud};
+use crate::pdf_crud::{Document, PdfCrud, SearchHit};
 use crate::{convert::Conversion, pipeline};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, TableBuilder, TableRow};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -61,7 +61,7 @@ enum CardClick {
 
 /// The pages of the window, picked with the buttons at the top.
 /// `PartialEq` lets egui compare tabs, to know which button to show as chosen.
-/// `#[default]` marks the tab `Default` gives: the archive is shown first.
+/// `#[default]` marks the tab `Default` gives: the pdf_crud is shown first.
 #[derive(Default, PartialEq)]
 enum Tab {
     #[default]
@@ -70,11 +70,11 @@ enum Tab {
 }
 
 /// Everything the window remembers between frames.
-#[derive(Default)]
 pub struct App {
-    /// The page shown now.
+    crud: PdfCrud,
     tab: Tab,
     pdfs: Vec<Document>,
+    hits: Vec<SearchHit>,
     /// The images added so far. Their order here is the page order in the PDF.
     pictures: Vec<Picture>,
     /// The image shown large, if one was clicked.
@@ -83,6 +83,7 @@ pub struct App {
     conversion: Option<Conversion>,
     /// What the last conversion did, shown next to the Convert button.
     status: String,
+    search: String,
 }
 
 impl eframe::App for App {
@@ -112,13 +113,23 @@ impl eframe::App for App {
 
 // A second `impl` block: the app's own methods, apart from the ones `eframe::App` requires.
 impl App {
-    fn load_pdfs(limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
-        let mut pdf_crud = PdfCrud::open(Path::new(DB_FILE))?;
-        Ok(pdf_crud.find_all(limit)?)
+    pub fn new() -> Self {
+        let pdf_crud = match PdfCrud::open(Path::new(DB_FILE)) {
+            Ok(pdf_crud) => pdf_crud,
+            Err(error) => {
+                eprintln!("cannot open the pdf_crud: {error}");
+                panic!("cannot open the pdf_crud: {error}");
+            }
+        };
+        App { crud: pdf_crud, tab: Default::default(), pdfs: vec![], hits: vec![], pictures: vec![], preview: None, conversion: None, status: "".to_string(), search: "".to_string() }
+    }
+
+    fn load_pdfs(&mut self, limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
+        Ok(self.crud.find_all(limit)?)
     }
 
     pub fn set_pdfs(&mut self) {
-        match Self::load_pdfs(50) {
+        match self.load_pdfs(50) {
             Ok(pdfs) => {
                 self.pdfs = pdfs;
             }
@@ -154,11 +165,28 @@ impl App {
             {
                 self.pick_pdf();
             }
+            let search_box =
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search…"));
+            if search_box.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !self.search.is_empty() {
+            self.on_search();
+            }
+            if self.search.is_empty(){
+                self.hits = vec![];
+            }
         });
-        display_pdfs(ui, &self.pdfs);
+        if self.hits.is_empty() {
+            display_pdfs(ui, &self.pdfs, &[]);
+        } else {
+            display_pdfs(ui, &[], &self.hits);
+        }
     }
 
-    /// The images page: drop images, tick them and save them as one PDF.
+
+    pub fn on_search(&mut self){
+        self.hits = self.crud.search(self.search.as_str()).unwrap();
+    }
+
+
     fn images_tab(&mut self, ui: &mut egui::Ui) {
         drop_area(
             ui,
@@ -184,22 +212,12 @@ impl App {
         self.store_pdfs(&[pdf]);
     }
 
-    /// Stores the files in the archive, then reloads the list of PDFs.
-    /// A file stored before is skipped by `add_pdf`; failures (not a PDF, no text) are printed.
     fn store_pdfs(&mut self, pdfs: &[PathBuf]) {
-        let mut archive = match PdfCrud::open(Path::new(DB_FILE)) {
-            Ok(archive) => archive,
-            Err(error) => {
-                eprintln!("cannot open the archive: {error}");
-                return;
-            }
-        };
         for pdf in pdfs {
-            if let Err(error) = archive.add_pdf(pdf) {
+            if let Err(error) = self.crud.add_pdf(pdf) {
                 eprintln!("cannot store {error}"); // the error already names the file
             }
         }
-        // `archive` is only a local variable, so `self` is free to be borrowed again here.
         self.set_pdfs();
     }
 
@@ -361,7 +379,7 @@ fn preview_header(ui: &mut egui::Ui, preview: &mut Preview) -> bool {
         }
         ui.button("Close").clicked()
     })
-    .inner
+        .inner
 }
 
 /// The image inside a `Scene`, an area that can be zoomed and moved, filling `size`.
@@ -423,7 +441,7 @@ fn picture_card(ui: &mut egui::Ui, picture: &mut Picture, index: usize, count: u
 
         if opened { CardClick::Open } else { button }
     })
-    .inner
+        .inner
 }
 
 /// The ←, → and × buttons of a card. The arrows are greyed out at the ends of the list.
@@ -460,11 +478,9 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The stored letters as a table that fits the window's width: the file name, the
-/// category and the summary. Hovering the name shows the path; the summary wraps.
-fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
-    // Unlike `Grid`, which grows with its longest text, `TableBuilder` gives each column
-    // a width, and `clip` cuts what doesn't fit. Rows scroll inside the table.
+
+
+fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document], hits: &[SearchHit]) {
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::initial(120.0).resizable(true).clip(true))
@@ -484,22 +500,31 @@ fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document]) {
         })
         .body(|mut body| {
             for pdf in pdfs {
-                body.row(PDF_ROW_HEIGHT, |mut row| {
-                    row.col(|ui| {
-                        let name = file_name(Path::new(&pdf.file_path));
-                        ui.add(egui::Label::new(name).truncate())
-                            .on_hover_text(&pdf.file_path);
-                    });
-                    row.col(|ui| {
-                        ui.label(&pdf.category);
-                    });
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(&pdf.summary).wrap())
-                            .on_hover_text(&pdf.summary);
-                    });
+                body.row(PDF_ROW_HEIGHT, |row| {
+                    pdf_row(row, &pdf.file_path, &pdf.category, &pdf.summary)
+                });
+            }
+            for hit in hits {
+                body.row(PDF_ROW_HEIGHT, |row| {
+                    pdf_row(row, &hit.file_path, &hit.category, &hit.summary)
                 });
             }
         });
+}
+
+fn pdf_row(mut row: TableRow<'_, '_>, file_path: &str, category: &str, summary: &str) {
+    row.col(|ui| {
+        let name = file_name(Path::new(file_path));
+        ui.add(egui::Label::new(name).truncate())
+            .on_hover_text(file_path);
+    });
+    row.col(|ui| {
+        ui.label(category);
+    });
+    row.col(|ui| {
+        ui.add(egui::Label::new(summary).wrap())
+            .on_hover_text(summary);
+    });
 }
 /// A box asking for files with `text`; while files are dragged over the window it
 /// lights up and shows `hover_text`.
