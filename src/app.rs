@@ -1,7 +1,9 @@
 //! The app window: drop images on it to see them as thumbnails; click one to see it large;
 //! put them in order, tick some and save them as one PDF.
 
+use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{Document, PdfCrud, SearchHit};
+use crate::schema::documents::letter_date;
 use crate::{convert::Conversion, pipeline};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder, TableRow};
@@ -57,6 +59,13 @@ enum CardClick {
     MoveEarlier,
     /// The → button: swap with the image after it.
     MoveLater,
+}
+
+enum PdfClick {
+    /// A left click, or "Open" in the right-click menu: open it in the PDF viewer.
+    Open(String),
+    /// "Show in Finder" in the right-click menu.
+    Reveal(String),
 }
 
 /// The pages of the window, picked with the buttons at the top.
@@ -176,15 +185,21 @@ impl App {
                 self.pick_pdf();
             }
             let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
-            let search_box = ui.scope(|ui| {
-                if too_short {
-                    // Red border while not focused, and red text.
-                    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::RED);
-                    ui.visuals_mut().override_text_color = Some(egui::Color32::RED);
-                }
-                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search… enter at least 3 symbols"))
-            }).inner;
-            if search_box.lost_focus(){
+            let search_box = ui
+                .scope(|ui| {
+                    if too_short {
+                        // Red border while not focused, and red text.
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.0, egui::Color32::RED);
+                        ui.visuals_mut().override_text_color = Some(egui::Color32::RED);
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search… enter at least 3 symbols"),
+                    )
+                })
+                .inner;
+            if search_box.lost_focus() {
                 self.hits = self.crud.search(self.search.as_str()).unwrap();
             }
             //  once search fields is cleared, results are also cleared
@@ -192,10 +207,13 @@ impl App {
                 self.hits = vec![];
             }
         });
-        if !self.search.is_empty() {
-            display_pdfs(ui, &[], &self.hits);
+        let rows: Vec<PdfRow> = if !self.search.is_empty() {
+            self.hits.iter().map(PdfRow::from).collect()
         } else {
-            display_pdfs(ui, &self.pdfs, &[]);
+            self.pdfs.iter().map(PdfRow::from).collect()
+        };
+        if let Some(click) = display_pdfs(ui, &rows) {
+            act_on_pdf_click(click);
         }
     }
 
@@ -490,7 +508,10 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document], hits: &[SearchHit]) {
+/// Draws the table of PDFs and returns what was clicked on a file name, if anything.
+fn display_pdfs(ui: &mut egui::Ui, rows: &[PdfRow]) -> Option<PdfClick> {
+    // The row closures below assign to `click`; they borrow it mutably one after another.
+    let mut click = None;
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::initial(120.0).resizable(true).clip(true))
@@ -513,53 +534,86 @@ fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document], hits: &[SearchHit]) {
             });
         })
         .body(|mut body| {
-            for pdf in pdfs {
+            for pdf in rows {
                 body.row(PDF_ROW_HEIGHT, |row| {
-                    pdf_row(
-                        row,
-                        &pdf.file_path,
-                        &pdf.category,
-                        &pdf.letter_date,
-                        &pdf.summary,
-                    )
-                });
-            }
-            for hit in hits {
-                body.row(PDF_ROW_HEIGHT, |row| {
-                    pdf_row(
-                        row,
-                        &hit.file_path,
-                        &hit.category,
-                        &hit.letter_date,
-                        &hit.summary,
-                    )
+                    // Only a real click (`Some`) is kept, so a later row cannot erase it.
+                    if let Some(row_click) = pdf_row(row, pdf) {
+                        click = Some(row_click);
+                    }
                 });
             }
         });
+    click
 }
 
-fn pdf_row(
-    mut row: TableRow<'_, '_>,
-    file_path: &str,
-    category: &str,
-    letter_date: &Option<String>,
-    summary: &str,
-) {
+fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
+    let mut click = None;
     row.col(|ui| {
-        let name = file_name(Path::new(file_path));
-        ui.add(egui::Label::new(name).truncate())
-            .on_hover_text(file_path);
+        click = file_link(ui, pdf.file_path);
     });
     row.col(|ui| {
-        ui.label(category);
+        ui.label(pdf.category);
     });
     row.col(|ui| {
-        ui.label(letter_date.as_deref().unwrap_or("-"));
+        ui.label(pdf.letter_date.unwrap_or("-"));
     });
     row.col(|ui| {
-        ui.add(egui::Label::new(summary).wrap())
-            .on_hover_text(summary);
+        ui.add(egui::Label::new(pdf.summary).wrap())
+            .on_hover_text(pdf.summary);
     });
+    click
+}
+
+/// The file name drawn as a link: a left click opens the PDF, a right click shows a
+/// menu with "Open" and "Show in Finder".
+fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
+    let name = file_name(Path::new(file_path));
+    // A `Label` (not `ui.link`) so long names can still be cut with "…" by `truncate`.
+    let text = egui::RichText::new(name)
+        .underline()
+        .color(ui.visuals().hyperlink_color);
+    let link = ui
+        .add(
+            egui::Label::new(text)
+                .truncate()
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(file_path);
+
+    let mut click = None;
+    if link.clicked() {
+        click = Some(PdfClick::Open(file_path.to_string()));
+    }
+    // `context_menu` shows the closure's buttons in a popup after a right click.
+    link.context_menu(|ui| {
+        if ui.button("Open").clicked() {
+            click = Some(PdfClick::Open(file_path.to_string()));
+            ui.close();
+        }
+        if ui.button("Show in Finder").clicked() {
+            click = Some(PdfClick::Reveal(file_path.to_string()));
+            ui.close();
+        }
+    });
+    click
+}
+
+/// Opens the clicked PDF or shows it in Finder; prints why if that fails.
+fn act_on_pdf_click(click: PdfClick) {
+    let (path, result) = match click {
+        PdfClick::Open(path) => {
+            let result = open_in_viewer(Path::new(&path));
+            (path, result)
+        }
+        PdfClick::Reveal(path) => {
+            let result = reveal_in_finder(Path::new(&path));
+            (path, result)
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("cannot open {path}: {error}");
+    }
 }
 /// A box asking for files with `text`; while files are dragged over the window it
 /// lights up and shows `hover_text`.
@@ -609,4 +663,33 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+struct PdfRow<'a> {
+    category: &'a str,
+    summary: &'a str,
+    letter_date: Option<&'a str>,
+    file_path: &'a str,
+}
+
+impl<'a> From<&'a Document> for PdfRow<'a> {
+    fn from(pdf: &'a Document) -> Self {
+        PdfRow {
+            category: &pdf.category,
+            summary: &pdf.summary,
+            letter_date: pdf.letter_date.as_deref(),
+            file_path: &pdf.file_path,
+        }
+    }
+}
+
+impl<'a> From<&'a SearchHit> for PdfRow<'a> {
+    fn from(hit: &'a SearchHit) -> Self {
+        PdfRow {
+            category: &hit.category,
+            summary: &hit.summary,
+            letter_date: hit.letter_date.as_deref(),
+            file_path: &hit.file_path,
+        }
+    }
 }

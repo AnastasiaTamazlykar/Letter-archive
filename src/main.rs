@@ -5,6 +5,7 @@ mod app;
 // used by the tests only. `allow` silences their "never used" warnings until it is.
 mod convert;
 mod language;
+mod open_file;
 #[allow(dead_code)]
 mod pdf_crud;
 mod pipeline;
