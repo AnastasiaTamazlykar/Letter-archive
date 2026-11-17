@@ -3,10 +3,10 @@
 
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{Document, PdfCrud, SearchHit};
-use crate::schema::documents::letter_date;
+use crate::pdf_pages::render_pages;
 use crate::{convert::Conversion, pipeline};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder, TableRow};
+use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +29,15 @@ const PREVIEW_PIXELS: u32 = 4096;
 const PREVIEW_SHARE: f32 = 0.9;
 /// How far the preview can be zoomed in: 2.0 shows each image pixel as 2 × 2 points.
 const MAX_ZOOM: f32 = 2.0;
+/// Width of a PDF page drawn for the area right of the table, in pixels.
+const PDF_VIEW_PIXELS: u32 = 1200;
+/// Share of the Archive tab's width the PDF area right of the table takes at the start.
+const PDF_VIEW_SHARE: f32 = 0.5;
+/// How small and how large the PDF area's share can be dragged.
+const PDF_VIEW_SHARE_MIN: f32 = 0.2;
+const PDF_VIEW_SHARE_MAX: f32 = 0.8;
+/// Width of the draggable divider between the table and the PDF area, in points.
+const DIVIDER_WIDTH: f32 = 8.0;
 
 /// One added image and its thumbnail.
 struct Picture {
@@ -48,6 +57,12 @@ struct Preview {
     view: egui::Rect,
 }
 
+/// The PDF shown in the area right of the table: its name and its pages as textures.
+struct PdfView {
+    name: String,
+    pages: Vec<egui::TextureHandle>,
+}
+
 /// What the user clicked on a card in this frame.
 enum CardClick {
     Nothing,
@@ -62,7 +77,9 @@ enum CardClick {
 }
 
 enum PdfClick {
-    /// A left click, or "Open" in the right-click menu: open it in the PDF viewer.
+    /// A left click: show it in the area right of the table.
+    Show(String),
+    /// "Open" in the right-click menu: open it in the PDF app.
     Open(String),
     /// "Show in Finder" in the right-click menu.
     Reveal(String),
@@ -88,6 +105,10 @@ pub struct App {
     pictures: Vec<Picture>,
     /// The image shown large, if one was clicked.
     preview: Option<Preview>,
+    /// The PDF shown right of the table, if a file name was clicked.
+    pdf_view: Option<PdfView>,
+    /// The PDF area's share of the Archive tab's width; changed by dragging the divider.
+    pdf_view_share: f32,
     /// The conversion running in the background, if any.
     conversion: Option<Conversion>,
     /// What the last conversion did, shown next to the Convert button.
@@ -137,6 +158,8 @@ impl App {
             hits: vec![],
             pictures: vec![],
             preview: None,
+            pdf_view: None,
+            pdf_view_share: PDF_VIEW_SHARE,
             conversion: None,
             status: "".to_string(),
             search: "".to_string(),
@@ -212,9 +235,89 @@ impl App {
         } else {
             self.pdfs.iter().map(PdfRow::from).collect()
         };
-        if let Some(click) = display_pdfs(ui, &rows) {
-            act_on_pdf_click(click);
+
+        // A strip splits the space into cells side by side: the table on the left, the
+        // divider, the PDF on the right. `clip`: no cell can draw over another.
+        // The cells only note what happened; we act on it after the strip.
+        let width = ui.available_width();
+        let mut click = None;
+        let mut close = false;
+        let mut dragged = 0.0;
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::relative(1.0 - self.pdf_view_share))
+            .size(Size::exact(DIVIDER_WIDTH))
+            .size(Size::remainder())
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    click = display_pdfs(ui, &rows);
+                });
+                strip.cell(|ui| {
+                    dragged = divider(ui);
+                });
+                strip.cell(|ui| {
+                    close = pdf_view_area(ui, self.pdf_view.as_ref());
+                });
+            });
+
+        // Dragging right makes the table wider, so the PDF area's share gets smaller.
+        // Only when dragged: with a width of 0, `0.0 / 0.0` would give NaN ("not a number").
+        if dragged != 0.0 {
+            self.pdf_view_share = (self.pdf_view_share - dragged / width)
+                .clamp(PDF_VIEW_SHARE_MIN, PDF_VIEW_SHARE_MAX);
         }
+
+        if close {
+            self.pdf_view = None;
+        }
+        if let Some(click) = click {
+            self.act_on_pdf_click(ui.ctx(), click);
+        }
+    }
+
+
+    /// Acts on a click on a file name: shows the PDF right of the table, opens it in the
+    /// PDF app, or shows it in Finder; prints why if that fails.
+    fn act_on_pdf_click(&mut self, ctx: &egui::Context, click: PdfClick) {
+        let (path, result) = match click {
+            PdfClick::Show(path) => {
+                self.show_pdf(ctx, Path::new(&path));
+                return;
+            }
+            PdfClick::Open(path) => {
+                let result = open_in_viewer(Path::new(&path));
+                (path, result)
+            }
+            PdfClick::Reveal(path) => {
+                let result = reveal_in_finder(Path::new(&path));
+                (path, result)
+            }
+        };
+        if let Err(error) = result {
+            eprintln!("cannot open {path}: {error}");
+        }
+    }
+
+    /// Draws the PDF's pages and keeps them, to show right of the table.
+    /// Prints the error and keeps the PDF shown so far if this one can't be read.
+    fn show_pdf(&mut self, ctx: &egui::Context, path: &Path) {
+        let pages = match render_pages(path, PDF_VIEW_PIXELS) {
+            Ok(pages) => pages,
+            Err(error) => {
+                eprintln!("cannot show {}: {error}", path.display());
+                return;
+            }
+        };
+        let name = file_name(path);
+        let pages = pages
+            .iter()
+            .map(|page| {
+                let size = [page.width() as usize, page.height() as usize];
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, page.as_raw());
+                ctx.load_texture(&name, image, egui::TextureOptions::LINEAR)
+            })
+            .collect();
+        self.pdf_view = Some(PdfView { name, pages });
     }
 
     fn images_tab(&mut self, ui: &mut egui::Ui) {
@@ -516,7 +619,8 @@ fn display_pdfs(ui: &mut egui::Ui, rows: &[PdfRow]) -> Option<PdfClick> {
         .striped(true)
         .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::initial(120.0).resizable(true).clip(true))
-        .column(Column::initial(120.0).resizable(true).clip(true))
+        .column(Column::initial(100.0).resizable(true).clip(true))
+        // The last column takes the rest of the width, so no empty column is left after it.
         .column(Column::remainder().clip(true))
         .header(PDF_ROW_HEIGHT, |mut header| {
             // Each `col` closure draws one cell; `;` makes it return `()`, as `col` wants.
@@ -564,8 +668,6 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
     click
 }
 
-/// The file name drawn as a link: a left click opens the PDF, a right click shows a
-/// menu with "Open" and "Show in Finder".
 fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
     let name = file_name(Path::new(file_path));
     // A `Label` (not `ui.link`) so long names can still be cut with "…" by `truncate`.
@@ -583,7 +685,7 @@ fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
 
     let mut click = None;
     if link.clicked() {
-        click = Some(PdfClick::Open(file_path.to_string()));
+        click = Some(PdfClick::Show(file_path.to_string()));
     }
     // `context_menu` shows the closure's buttons in a popup after a right click.
     link.context_menu(|ui| {
@@ -599,21 +701,48 @@ fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
     click
 }
 
-/// Opens the clicked PDF or shows it in Finder; prints why if that fails.
-fn act_on_pdf_click(click: PdfClick) {
-    let (path, result) = match click {
-        PdfClick::Open(path) => {
-            let result = open_in_viewer(Path::new(&path));
-            (path, result)
+/// The shown PDF: its name and a Close button, then its pages one under the other,
+/// scrollable and as wide as the area. Returns whether Close was clicked.
+fn pdf_pages_view(ui: &mut egui::Ui, view: &PdfView) -> bool {
+    let close = ui
+        .horizontal(|ui| {
+            ui.strong(&view.name);
+            ui.button("Close").clicked()
+        })
+        .inner;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for page in &view.pages {
+            // `max_width` shrinks the page to the area's width, keeping its proportions.
+            ui.add(egui::Image::new(page).max_width(ui.available_width()));
         }
-        PdfClick::Reveal(path) => {
-            let result = reveal_in_finder(Path::new(&path));
-            (path, result)
+    });
+    close
+}
+
+/// The area right of the table: the clicked PDF's pages, or a hint if none is shown.
+/// Returns whether Close was clicked.
+fn pdf_view_area(ui: &mut egui::Ui, view: Option<&PdfView>) -> bool {
+    match view {
+        Some(view) => pdf_pages_view(ui, view),
+        None => {
+            ui.weak("Click a file name to see the letter here");
+            false
         }
-    };
-    if let Err(error) = result {
-        eprintln!("cannot open {path}: {error}");
     }
+}
+
+/// The line between the table and the PDF area. Returns how far it was dragged in this
+/// frame, in points (right is positive); 0 when it was not dragged.
+fn divider(ui: &mut egui::Ui) -> f32 {
+    // The whole cell reacts to dragging, not only the thin line drawn in its middle.
+    let response = ui
+        .allocate_response(ui.available_size(), egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    let rect = response.rect;
+    // Brighter while the mouse is on it or dragging, like other egui widgets.
+    let stroke = ui.style().interact(&response).fg_stroke;
+    ui.painter().vline(rect.center().x, rect.y_range(), stroke);
+    response.drag_delta().x
 }
 /// A box asking for files with `text`; while files are dragged over the window it
 /// lights up and shows `hover_text`.
