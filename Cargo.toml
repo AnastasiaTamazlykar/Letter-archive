@@ -32,3 +32,4 @@ diesel = { version = "2.3.14", features = ["sqlite", "returning_clauses_for_sqli
 # `trigram remove_diacritics` tokenizer.
 libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
+jiff = "1.0.0"

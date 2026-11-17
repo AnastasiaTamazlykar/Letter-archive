@@ -13,7 +13,7 @@ use diesel::{
     connection::SimpleConnection,
     prelude::*,
     sql_query,
-    sql_types::{BigInt, Bool, Text},
+    sql_types::{BigInt, Bool, Text, Nullable},
 };
 use objc2::AnyThread;
 use objc2_foundation::{NSString, NSURL};
@@ -41,7 +41,8 @@ const CREATE_DOCUMENTS: &str = "
         text        TEXT NOT NULL,
         summary TEXT NOT NULL,
         language    TEXT NOT NULL,
-        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        letter_date  TEXT
     )";
 
 /// The search index over `documents.text`, built by SQLite's full-text engine FTS5.
@@ -79,6 +80,7 @@ const MIN_WORD_LEN: usize = 3;
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum LetterCategory {
+    Musik,
     Finanzamt,
     Rundfunkbeitrag,
     Gesundheit,
@@ -89,7 +91,8 @@ pub enum LetterCategory {
 }
 
 impl LetterCategory {
-    pub const ALL: [LetterCategory; 7] = [
+    pub const ALL: [LetterCategory; 8] = [
+        LetterCategory::Musik,
         LetterCategory::Finanzamt,
         LetterCategory::Rundfunkbeitrag,
         LetterCategory::Gesundheit,
@@ -112,6 +115,7 @@ impl LetterCategory {
             LetterCategory::Zahnarzt => "Zahnarzt",
             LetterCategory::Datarobot => "Datarobot",
             LetterCategory::Sonstiges => "Sonstiges",
+            LetterCategory::Musik => "Musik",
         }
     }
 }
@@ -125,6 +129,7 @@ pub struct Document {
     pub text: String,
     pub summary: String,
     pub language: String,
+    pub letter_date: Option<String>,
     pub category: String,
 }
 
@@ -140,6 +145,8 @@ pub struct SearchHit {
     pub snippet: String,
     #[diesel(sql_type = Text)]
     pub category: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub letter_date: Option<String>,
     #[diesel(sql_type = Text)]
     pub summary: String,
 }
@@ -191,6 +198,11 @@ impl PdfCrud {
             .map_err(|e| format!("{}: {e}", pdf.display()).into())
     }
 
+    fn verify_date(date: &str)->Option<String>{
+        use jiff::civil::Date;
+        date.parse::<Date>().ok().map(|d| d.to_string())
+    }
+
     fn store(&mut self, pdf: &Path) -> Result<Added, Box<dyn Error>> {
         let hash = file_sha256(pdf)?;
         if let Some(id) = self.find_by_hash(&hash)? {
@@ -198,9 +210,8 @@ impl PdfCrud {
         }
         let text = extract_text(pdf)?;
         let model_answer = ask_model(&text)?;
-        // A tuple of `column.eq(value)` pairs is one new row. Diesel sends the values
-        // separately from the SQL, so text with quotes in it can never break (or inject
-        // into) the statement. `returning` hands back the id SQLite gave the row.
+        // let store date as text in iso format YYYY-MM-DD
+        let iso_letter_date = Self::verify_date(model_answer.letter_date.as_str());
         let id = diesel::insert_into(documents::table)
             .values((
                 documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?),
@@ -209,6 +220,7 @@ impl PdfCrud {
                 documents::summary.eq(model_answer.summary),
                 documents::language.eq(language::LETTERS.short),
                 documents::category.eq(model_answer.category.name()),
+                documents::letter_date.eq(iso_letter_date)
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;
@@ -255,7 +267,7 @@ impl PdfCrud {
 
         sql_query(
             "SELECT documents.id AS id, documents.summary AS  summary,
-            documents.category as category, documents.file_path AS file_path,
+            documents.category as category,documents.letter_date AS letter_date, documents.file_path AS file_path,
                     snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
              FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
              WHERE documents_fts MATCH ?

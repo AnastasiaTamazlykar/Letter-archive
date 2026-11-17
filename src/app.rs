@@ -121,7 +121,17 @@ impl App {
                 panic!("cannot open the pdf_crud: {error}");
             }
         };
-        App { crud: pdf_crud, tab: Default::default(), pdfs: vec![], hits: vec![], pictures: vec![], preview: None, conversion: None, status: "".to_string(), search: "".to_string() }
+        App {
+            crud: pdf_crud,
+            tab: Default::default(),
+            pdfs: vec![],
+            hits: vec![],
+            pictures: vec![],
+            preview: None,
+            conversion: None,
+            status: "".to_string(),
+            search: "".to_string(),
+        }
     }
 
     fn load_pdfs(&mut self, limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
@@ -165,27 +175,29 @@ impl App {
             {
                 self.pick_pdf();
             }
-            let search_box =
-                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search…"));
-            if search_box.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !self.search.is_empty() {
-            self.on_search();
+            let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
+            let search_box = ui.scope(|ui| {
+                if too_short {
+                    // Red border while not focused, and red text.
+                    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::RED);
+                    ui.visuals_mut().override_text_color = Some(egui::Color32::RED);
+                }
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search… enter at least 3 symbols"))
+            }).inner;
+            if search_box.lost_focus(){
+                self.hits = self.crud.search(self.search.as_str()).unwrap();
             }
-            if self.search.is_empty(){
+            //  once search fields is cleared, results are also cleared
+            if self.search.is_empty() {
                 self.hits = vec![];
             }
         });
-        if self.hits.is_empty() {
-            display_pdfs(ui, &self.pdfs, &[]);
-        } else {
+        if !self.search.is_empty() {
             display_pdfs(ui, &[], &self.hits);
+        } else {
+            display_pdfs(ui, &self.pdfs, &[]);
         }
     }
-
-
-    pub fn on_search(&mut self){
-        self.hits = self.crud.search(self.search.as_str()).unwrap();
-    }
-
 
     fn images_tab(&mut self, ui: &mut egui::Ui) {
         drop_area(
@@ -379,7 +391,7 @@ fn preview_header(ui: &mut egui::Ui, preview: &mut Preview) -> bool {
         }
         ui.button("Close").clicked()
     })
-        .inner
+    .inner
 }
 
 /// The image inside a `Scene`, an area that can be zoomed and moved, filling `size`.
@@ -441,7 +453,7 @@ fn picture_card(ui: &mut egui::Ui, picture: &mut Picture, index: usize, count: u
 
         if opened { CardClick::Open } else { button }
     })
-        .inner
+    .inner
 }
 
 /// The ←, → and × buttons of a card. The arrows are greyed out at the ends of the list.
@@ -478,11 +490,10 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-
-
 fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document], hits: &[SearchHit]) {
     TableBuilder::new(ui)
         .striped(true)
+        .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::remainder().clip(true))
@@ -495,24 +506,45 @@ fn display_pdfs(ui: &mut egui::Ui, pdfs: &[Document], hits: &[SearchHit]) {
                 ui.strong("Category");
             });
             header.col(|ui| {
+                ui.strong("Letter date");
+            });
+            header.col(|ui| {
                 ui.strong("Summary");
             });
         })
         .body(|mut body| {
             for pdf in pdfs {
                 body.row(PDF_ROW_HEIGHT, |row| {
-                    pdf_row(row, &pdf.file_path, &pdf.category, &pdf.summary)
+                    pdf_row(
+                        row,
+                        &pdf.file_path,
+                        &pdf.category,
+                        &pdf.letter_date,
+                        &pdf.summary,
+                    )
                 });
             }
             for hit in hits {
                 body.row(PDF_ROW_HEIGHT, |row| {
-                    pdf_row(row, &hit.file_path, &hit.category, &hit.summary)
+                    pdf_row(
+                        row,
+                        &hit.file_path,
+                        &hit.category,
+                        &hit.letter_date,
+                        &hit.summary,
+                    )
                 });
             }
         });
 }
 
-fn pdf_row(mut row: TableRow<'_, '_>, file_path: &str, category: &str, summary: &str) {
+fn pdf_row(
+    mut row: TableRow<'_, '_>,
+    file_path: &str,
+    category: &str,
+    letter_date: &Option<String>,
+    summary: &str,
+) {
     row.col(|ui| {
         let name = file_name(Path::new(file_path));
         ui.add(egui::Label::new(name).truncate())
@@ -520,6 +552,9 @@ fn pdf_row(mut row: TableRow<'_, '_>, file_path: &str, category: &str, summary: 
     });
     row.col(|ui| {
         ui.label(category);
+    });
+    row.col(|ui| {
+        ui.label(letter_date.as_deref().unwrap_or("-"));
     });
     row.col(|ui| {
         ui.add(egui::Label::new(summary).wrap())
