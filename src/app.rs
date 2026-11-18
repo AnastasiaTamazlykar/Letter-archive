@@ -443,8 +443,11 @@ impl App {
         // borrowed), so we only note the click here and act on it after the loop.
         let mut click = None;
         let count = self.pictures.len();
+        // Left to right, wrapping to a new line when full. `Align::Min` lines the cards up
+        // at the top; `horizontal_wrapped` would center them, which makes them drift down.
+        let rows = egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.with_layout(rows, |ui| {
                 // `iter_mut`: each card may change its picture (the tick box).
                 for (index, picture) in self.pictures.iter_mut().enumerate() {
                     match picture_card(ui, picture, index, count) {
@@ -553,7 +556,11 @@ fn make_texture(ctx: &egui::Context, path: &Path, pixels: u32) -> Option<egui::T
 /// list of `count`. Returns what was clicked; the tick box changes `picture` directly.
 fn picture_card(ui: &mut egui::Ui, picture: &mut Picture, index: usize, count: usize) -> CardClick {
     // `.inner` is the value the closure returns; egui hands it back next to its layout info.
-    ui.vertical(|ui| {
+    // We give the card's width up front (unlike `ui.vertical`), so the wrapping row in
+    // `picture_grid` can tell when a card won't fit and start a new line for it.
+    let card_size = egui::vec2(THUMBNAIL_POINTS, THUMBNAIL_POINTS);
+    let top_down = egui::Layout::top_down(egui::Align::Min);
+    ui.allocate_ui_with_layout(card_size, top_down, |ui| {
         ui.set_width(THUMBNAIL_POINTS);
         let opened = match &picture.thumbnail {
             Some(texture) => thumbnail_button(ui, texture).clicked(),
