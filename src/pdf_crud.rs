@@ -90,6 +90,14 @@ pub struct Document {
     pub letter_date: Option<String>,
 }
 
+/// Where a stored letter's PDF should be, and its fingerprint; what the rescan needs.
+/// `Queryable` fills the fields in order from the columns `stored_files` selects.
+#[derive(Debug, Queryable)]
+pub struct StoredFile {
+    pub id: i64,
+    pub file_path: String,
+    pub sha256: String,
+}
 
 #[derive(Debug, QueryableByName)]
 pub struct SearchHit {
@@ -165,6 +173,27 @@ impl PdfCrud {
             .returning(documents::id)
             .get_result(&mut self.db)?;
         Ok(id)
+    }
+
+    /// Every stored letter's id, path and fingerprint, with no limit.
+    pub fn stored_files(&mut self) -> QueryResult<Vec<StoredFile>> {
+        documents::table
+            .select((documents::id, documents::file_path, documents::sha256))
+            .load(&mut self.db)
+    }
+
+    /// Changes where a letter's PDF is, for one letter.
+    pub fn update_file_path(&mut self, id: i64, pdf: &Path) -> Result<(), Box<dyn Error>> {
+        diesel::update(documents::table.find(id)) // UPDATE documents WHERE id = ?
+            .set(documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?))
+            .execute(&mut self.db)?;
+        Ok(())
+    }
+
+    /// Removes one letter. The search index follows by itself (the delete trigger).
+    pub fn delete_letter(&mut self, id: i64) -> QueryResult<()> {
+        diesel::delete(documents::table.find(id)).execute(&mut self.db)?;
+        Ok(())
     }
 
     /// The id of the letter with this fingerprint, if there is one.

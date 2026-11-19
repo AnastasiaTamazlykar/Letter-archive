@@ -14,6 +14,7 @@ mod pdf_pages;
 #[allow(dead_code)]
 mod pdf_crud;
 mod pipeline;
+mod rescan;
 mod schema;
 
 mod summarize_with_ai;
@@ -31,7 +32,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let mut app = app::App::new();
-    app.set_pdfs();
+    app.rescan(); // finds moved PDFs, removes letters whose PDF is gone, loads the table
     eframe::run_native(
         "Paper Archive",
         options,

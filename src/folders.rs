@@ -1,8 +1,9 @@
-//! The folders inside the output folder, which the LLM picks from to file a letter.
+//! What is inside the output folder: its folders, which the LLM picks from to file a
+//! letter, and its PDFs, which the rescan looks through.
 
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Every folder under `root`, at any depth, as a path relative to `root` with `/`
@@ -39,6 +40,41 @@ fn collect_folders(dir: &Path, prefix: &str, found: &mut Vec<String>) -> io::Res
     Ok(())
 }
 
+/// Every PDF under `root`, at any depth, sorted. Each path starts with `root`, so for
+/// `root` = "data/pdfs/output" they look like the paths the database stores.
+/// Hidden folders are skipped, as in `scan_folders`. A missing `root` gives an empty list.
+pub fn pdf_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    if root.is_dir() {
+        collect_pdfs(root, &mut found)?;
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Adds the PDFs in `dir` to `found`, and those in the folders inside it.
+fn collect_pdfs(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path(); // `dir` joined with the entry's name
+        let hidden = entry.file_name().to_string_lossy().starts_with('.');
+        if entry.file_type()?.is_dir() {
+            if !hidden {
+                collect_pdfs(&path, found)?;
+            }
+        } else if is_pdf(&path) {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// True if the file ends in ".pdf", in any case (".PDF" too).
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
 // Small file, so the tests stay here.
 #[cfg(test)]
 mod tests {
@@ -71,5 +107,29 @@ mod tests {
     fn test_scan_folders_missing_root_is_empty() {
         let root = test_folder("scan_missing").join("no_such_folder");
         assert!(scan_folders(&root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_pdf_files_lists_pdfs_in_all_folders() {
+        let root = test_folder("pdfs_nested");
+        fs::create_dir_all(root.join("Gesundheit/teeth")).unwrap();
+        fs::write(root.join("a.pdf"), "").unwrap();
+        fs::write(root.join("Gesundheit/teeth/b.PDF"), "").unwrap();
+
+        let pdfs = pdf_files(&root).unwrap();
+
+        assert_eq!(pdfs, [root.join("Gesundheit/teeth/b.PDF"), root.join("a.pdf")]);
+    }
+
+    #[test]
+    fn test_pdf_files_skips_other_files_and_hidden_folders() {
+        let root = test_folder("pdfs_skips");
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::write(root.join(".hidden/secret.pdf"), "").unwrap();
+        fs::write(root.join("notes.txt"), "").unwrap();
+        fs::write(root.join(".DS_Store"), "").unwrap();
+        fs::write(root.join("Brief.pdf"), "").unwrap();
+
+        assert_eq!(pdf_files(&root).unwrap(), [root.join("Brief.pdf")]);
     }
 }

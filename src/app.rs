@@ -5,7 +5,7 @@ use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
 use crate::paths::{DB_FILE, OUTPUT_DIR};
-use crate::{convert::Conversion, pipeline};
+use crate::{convert::Conversion, pipeline, rescan};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 use std::error::Error;
@@ -169,6 +169,17 @@ impl App {
         Ok(self.crud.find_all(limit)?)
     }
 
+    /// Fixes the paths of PDFs moved inside the output folder and removes letters whose
+    /// PDF is gone (see `rescan.rs`), shows what it did, then reloads the table.
+    /// Runs at startup and from the Rescan button.
+    pub fn rescan(&mut self) {
+        self.status = match rescan::rescan(&mut self.crud, Path::new(OUTPUT_DIR)) {
+            Ok(report) => report.summary(),
+            Err(error) => format!("Rescan failed: {error}"),
+        };
+        self.set_pdfs(); // also after a failed rescan, so the table is never empty
+    }
+
     pub fn set_pdfs(&mut self) {
         match self.load_pdfs(50) {
             Ok(pdfs) => {
@@ -207,6 +218,15 @@ impl App {
                 .clicked()
             {
                 self.pick_pdf(ui.ctx());
+            }
+            if ui
+                .add_enabled(self.conversion.is_none(), egui::Button::new("Rescan"))
+                .on_hover_text(format!(
+                    "Find moved PDFs in {OUTPUT_DIR}; remove letters whose PDF is gone"
+                ))
+                .clicked()
+            {
+                self.rescan();
             }
             let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
             let search_box = ui

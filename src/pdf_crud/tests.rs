@@ -117,6 +117,58 @@ fn test_find_by_hash_knows_the_same_bytes_under_another_name() {
     assert_eq!(archive.find_by_hash(&other_hash).unwrap(), None);
 }
 
+#[test]
+fn test_stored_files_returns_every_row() {
+    let folder = test_folder("stored_files");
+    let first = folder.join("first.pdf");
+    write_pdf(&first, &LETTER);
+    let second = folder.join("second.pdf");
+    write_pdf(&second, &["Ein anderer Brief"]);
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let first_id = store(&mut archive, &first);
+    let second_id = store(&mut archive, &second);
+
+    let stored = archive.stored_files().unwrap();
+
+    let ids: Vec<i64> = stored.iter().map(|file| file.id).collect();
+    assert_eq!(ids, [first_id, second_id]);
+    assert_eq!(Path::new(&stored[0].file_path), first);
+    assert_eq!(stored[0].sha256, file_sha256(&first).unwrap());
+}
+
+#[test]
+fn test_update_file_path_changes_only_that_row() {
+    let folder = test_folder("update_path");
+    let moved = folder.join("moved.pdf");
+    write_pdf(&moved, &LETTER);
+    let other = folder.join("other.pdf");
+    write_pdf(&other, &["Ein anderer Brief"]);
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let moved_id = store(&mut archive, &moved);
+    let other_id = store(&mut archive, &other);
+
+    let new_path = folder.join("Finanzamt").join("moved.pdf");
+    archive.update_file_path(moved_id, &new_path).unwrap();
+
+    let path_of = |archive: &mut PdfCrud, id| archive.document(id).unwrap().unwrap().file_path;
+    assert_eq!(Path::new(&path_of(&mut archive, moved_id)), new_path);
+    assert_eq!(Path::new(&path_of(&mut archive, other_id)), other);
+}
+
+#[test]
+fn test_delete_letter_removes_the_row_and_its_search_hits() {
+    let pdf = test_folder("delete").join("brief.pdf");
+    write_pdf(&pdf, &LETTER);
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let id = store(&mut archive, &pdf);
+
+    archive.delete_letter(id).unwrap();
+
+    // The letter is gone, and so is its text from the search index.
+    assert!(archive.document(id).unwrap().is_none());
+    assert!(archive.search("Müller").unwrap().is_empty());
+}
+
 /// A letter stored in a database file is still there after opening it again.
 #[test]
 fn test_open_keeps_letters_on_disk() {
