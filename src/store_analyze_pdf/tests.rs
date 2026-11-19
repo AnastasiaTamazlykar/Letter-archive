@@ -1,0 +1,121 @@
+//! Tests for `file_pdf`. The first two fail before the LLM is asked, so they run
+//! without it; the last one needs the local LLM server running.
+
+use super::*;
+use crate::test_support::{test_folder, write_pdf};
+use  crate::pdf_crud::extract_text;
+
+const LETTER: [&str; 3] = [
+    "Finanzamt Berlin, 25.11.2025",
+    "Sehr geehrte Frau Müller,",
+    "Ihr Einkommensteuerbescheid für 2025 liegt bei.",
+];
+
+/// A fresh database file in this test's folder, with its tables.
+fn new_crud(folder: &Path) -> PdfCrud {
+    PdfCrud::new(&folder.join("archive.db")).unwrap()
+}
+
+/// The names of the files in a folder; empty if the folder doesn't exist.
+fn files_in(folder: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn test_file_pdf_already_stored_fails_and_copies_nothing() {
+    let folder = test_folder("file_pdf_twice");
+    let input = folder.join("brief.pdf");
+    write_pdf(&input, &LETTER);
+    let output = folder.join("output");
+    let mut crud = new_crud(&folder);
+    // Store the same bytes by hand first, so no LLM is needed.
+    let hash = pdf_crud::file_sha256(&input).unwrap();
+    let answer = crate::summarize_with_ai::LLMAnswer {
+        folder: Some("Finanzamt".to_string()),
+        summary: "Steuerbescheid".to_string(),
+        letter_date: "2025-11-25".to_string(),
+        file_name: "Steuerbescheid".to_string(),
+    };
+    crud.insert_letter(&input, &hash, "text", &answer).unwrap();
+
+    let error = analyze_place_pdf(&input, &output, &mut crud).unwrap_err();
+
+    assert!(error.to_string().contains("already in the archive"), "got: {error}");
+    assert!(files_in(&output).is_empty());
+}
+
+#[test]
+fn test_file_pdf_without_text_fails_and_copies_nothing() {
+    let folder = test_folder("file_pdf_no_text");
+    let input = folder.join("empty.pdf");
+    write_pdf(&input, &[]);
+    let output = folder.join("output");
+    let mut crud = new_crud(&folder);
+
+    let error = analyze_place_pdf(&input, &output, &mut crud).unwrap_err();
+
+    assert!(error.to_string().contains("no text"), "got: {error}");
+    assert!(files_in(&output).is_empty());
+    assert!(crud.find_all(10).unwrap().is_empty());
+}
+
+/// Needs the local LLM server running (like the tests in summarize_with_ai.rs).
+#[test]
+fn test_file_pdf_copies_and_records() {
+    let folder = test_folder("file_pdf_ok");
+    let input = folder.join("brief.pdf");
+    write_pdf(&input, &LETTER);
+    let output = folder.join("output");
+    let mut crud = new_crud(&folder);
+
+    let target = analyze_place_pdf(&input, &output, &mut crud).unwrap();
+
+    assert!(target.starts_with(&output), "got: {}", target.display());
+    assert!(target.exists());
+    assert!(input.exists(), "the input is copied, not moved");
+    let stored = crud.find_all(10).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(Path::new(&stored[0].file_path), target);
+    assert!(stored[0].text.contains("Frau Müller"));
+}
+
+/// Needs the local LLM server running. The letter is from the Finanzamt, so the LLM
+/// should pick that folder; the folder becomes the letter's category.
+#[test]
+fn test_file_pdf_puts_the_file_in_the_chosen_folder() {
+    let folder = test_folder("file_pdf_folder");
+    let input = folder.join("brief.pdf");
+    write_pdf(&input, &LETTER);
+    let output = folder.join("output");
+    fs::create_dir_all(output.join("Finanzamt")).unwrap();
+    fs::create_dir_all(output.join("Gesundheit/teeth")).unwrap();
+    let mut crud = new_crud(&folder);
+
+    let target = analyze_place_pdf(&input, &output, &mut crud).unwrap();
+
+    assert_eq!(target.parent(), Some(output.join("Finanzamt").as_path()));
+    assert_eq!(crud.find_all(10).unwrap()[0].category, "Finanzamt");
+}
+
+#[test]
+fn test_empty_folder() {
+    let folder = test_folder("file_pdf_folder");
+    let input = folder.join("brief.pdf");
+    write_pdf(&input, &LETTER);
+    let output = folder.join("output");
+
+    let text = extract_text(&input).unwrap();
+    let folders = scan_folders(&output).unwrap();
+    let answer = ask_model(&text, &folders).unwrap(); // nothing is written before the LLM has answered
+    assert_eq!(answer.folder,None);
+    fs::create_dir_all(output.join("Medizin")).unwrap();
+    let rescan_folders = scan_folders(&output).unwrap();
+    let answer = ask_model(&text, &rescan_folders).unwrap();
+    assert_eq!(answer.folder, None);//
+}
+

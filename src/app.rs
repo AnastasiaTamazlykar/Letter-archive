@@ -1,9 +1,10 @@
 //! The app window: drop images on it to see them as thumbnails; click one to see it large;
-//! put them in order, tick some and save them as one PDF.
+//! put them in order, tick some and file them as one analyzed PDF.
 
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
+use crate::paths::{DB_FILE, OUTPUT_DIR};
 use crate::{convert::Conversion, pipeline};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
@@ -12,8 +13,6 @@ use std::path::{Path, PathBuf};
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
-/// The letter archive's database file.
-const DB_FILE: &str = "data/archive.db";
 /// Height of one row of the PDF table, in points.
 const PDF_ROW_HEIGHT: f32 = 60.0;
 /// Height of the drop area, in points.
@@ -111,7 +110,7 @@ pub struct App {
     pdf_view_share: f32,
     /// The conversion running in the background, if any.
     conversion: Option<Conversion>,
-    /// What the last conversion did, shown next to the Convert button.
+    /// What the last conversion did, shown next to the buttons that start one.
     status: String,
     search: String,
 }
@@ -200,12 +199,14 @@ impl App {
     fn archive_tab(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Processed PDFs");
+            // One letter at a time: greyed out while a conversion runs.
+            let button = egui::Button::new("Analyze & file PDF…");
             if ui
-                .button("+")
-                .on_hover_text("Add a PDF to the archive")
+                .add_enabled(self.conversion.is_none(), button)
+                .on_hover_text(format!("Pick a PDF; a copy goes to {OUTPUT_DIR}"))
                 .clicked()
             {
-                self.pick_pdf();
+                self.pick_pdf(ui.ctx());
             }
             let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
             let search_box = ui
@@ -229,6 +230,7 @@ impl App {
             if self.search.is_empty() {
                 self.hits = vec![];
             }
+            self.conversion_status(ui);
         });
         let rows: Vec<PdfRow> = if !self.search.is_empty() {
             self.hits.iter().map(PdfRow::from).collect()
@@ -332,26 +334,18 @@ impl App {
         self.picture_grid(ui);
     }
 
-    /// Asks for a PDF with the macOS Open panel and stores it; does nothing on Cancel.
-    fn pick_pdf(&mut self) {
+    /// Asks for a PDF with the macOS Open panel, then analyzes and files it in the
+    /// background; does nothing on Cancel.
+    fn pick_pdf(&mut self, ctx: &egui::Context) {
         let Some(pdf) = rfd::FileDialog::new()
-            .set_title("Add PDF to archive")
+            .set_title("Analyze & file PDF")
             .add_filter("PDF", &["pdf"])
             .pick_file()
         else {
             return;
         };
-        // `&[pdf]`: a list of one, borrowed as a slice, which is what `store_pdfs` takes.
-        self.store_pdfs(&[pdf]);
-    }
-
-    fn store_pdfs(&mut self, pdfs: &[PathBuf]) {
-        for pdf in pdfs {
-            if let Err(error) = self.crud.add_pdf(pdf) {
-                eprintln!("cannot store {error}"); // the error already names the file
-            }
-        }
-        self.set_pdfs();
+        self.status.clear();
+        self.conversion = Some(Conversion::start_pdf(pdf, ctx.clone()));
     }
 
     /// Adds one file if it is an image and not in the list yet, and makes its thumbnail.
@@ -377,11 +371,11 @@ impl App {
             .collect()
     }
 
-    /// The Convert button, with the conversion's progress or result next to it.
+    /// The Create button and where the PDF goes, with the progress or result next to it.
     fn convert_bar(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_paths();
         let ready = !selected.is_empty() && self.conversion.is_none();
-        let button = egui::Button::new(format!("Save {} as PDF…", selected.len()));
+        let button = egui::Button::new("Create, analyze & file PDF");
 
         ui.horizontal(|ui| {
             let response = ui
@@ -390,33 +384,29 @@ impl App {
             if response.clicked() {
                 self.start_conversion(ui.ctx(), selected);
             }
-            match &self.conversion {
-                Some(conversion) => {
-                    ui.spinner();
-                    ui.label(conversion.progress());
-                }
-                None => {
-                    ui.label(&self.status);
-                }
-            }
+            ui.weak(format!("→ {OUTPUT_DIR}"));
+            self.conversion_status(ui);
         });
     }
 
-    /// Asks where to save the PDF, then makes it from the images in the background.
+    /// A spinner and what the running conversion does, or else what the last one did.
+    fn conversion_status(&self, ui: &mut egui::Ui) {
+        match &self.conversion {
+            Some(conversion) => {
+                ui.spinner();
+                ui.label(conversion.progress());
+            }
+            None => {
+                ui.label(&self.status);
+            }
+        }
+    }
+
+    /// Makes a PDF from the images, analyzes and files it, all in the background.
     fn start_conversion(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
-        // Opens the macOS "Save As" panel and waits for the user; `None` if they cancel.
-        // The panel itself asks before replacing a file that already exists.
-        let Some(pdf) = rfd::FileDialog::new()
-            .set_title("Save as PDF")
-            .set_file_name(suggested_name(&images))
-            .add_filter("PDF", &["pdf"])
-            .save_file()
-        else {
-            return;
-        };
         self.status.clear();
         // `clone` gives the thread its own handle to the window; both point to the same one.
-        self.conversion = Some(Conversion::start(images, with_pdf_ending(pdf), ctx.clone()));
+        self.conversion = Some(Conversion::start_images(images, ctx.clone()));
     }
 
     /// Collects news from the running conversion; when it is done, keeps its summary.
@@ -427,10 +417,14 @@ impl App {
         conversion.receive();
         if conversion.is_finished() {
             self.status = conversion.summary();
+            let filed = conversion.succeeded();
             self.conversion = None;
-            // Untick all images, so the button goes back to "Save 0 as PDF…".
+            // Untick all images, so the same ones aren't filed twice by accident.
             for picture in &mut self.pictures {
                 picture.selected = false;
+            }
+            if filed {
+                self.set_pdfs(); // show the new letter in the Archive tab
             }
         }
     }
@@ -774,24 +768,6 @@ fn is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
-}
-
-/// The name the Save panel suggests: the first image's name, e.g. "IMG_9549.pdf".
-fn suggested_name(images: &[PathBuf]) -> String {
-    let stem = images
-        .first()
-        .and_then(|image| image.file_stem())
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Letter".to_string());
-    format!("{stem}.pdf")
-}
-
-/// Adds ".pdf" if the user typed a name without an ending.
-fn with_pdf_ending(mut pdf: PathBuf) -> PathBuf {
-    if pdf.extension().is_none() {
-        pdf.set_extension("pdf");
-    }
-    pdf
 }
 
 /// The last part of a path, e.g. "IMG_9549.HEIC".

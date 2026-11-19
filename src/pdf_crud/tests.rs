@@ -1,50 +1,43 @@
 //! Tests for the letter archive. The test PDFs are written here with real text, so the
 //! tests need no photos and no Vision; most use a database that lives only in memory.
 
-use std::{fs::File, io::BufWriter, path::PathBuf};
-
-use printpdf::{Mm, PdfDocument as NewPdf};
-
 // `super::*` brings in everything `archive.rs` can see, private items included.
 use super::*;
-use crate::pipeline::FONT;
+use crate::test_support::{test_folder, write_pdf};
 
 // A method added to `PdfCrud` here, in the tests file: Rust allows an `impl` block in any
 // module of the same crate, and as a child module this one may set the private `db`
 // field. So `pdf_crud.rs` itself carries no test-only code.
 impl PdfCrud {
-    /// A database that lives only in memory and is gone when dropped.
+    /// A database that lives only in memory, with its tables, and is gone when dropped.
     /// `:memory:` is SQLite's special name for that.
     fn in_memory() -> Result<Self, Box<dyn Error>> {
-        Ok(Self {
-            db: SqliteConnection::establish(":memory:")?,
-        })
+        let mut db = SqliteConnection::establish(":memory:")?;
+        db.batch_execute(CREATE_DOCUMENTS)?;
+        create_search_index(&mut db)?;
+        Ok(Self { db })
     }
 }
 
-// ── Helpers ──
+// The helpers `test_folder` and `write_pdf` live in `src/test_support.rs`.
 
-/// An empty folder of its own for one test, so tests running at the same time
-/// don't touch each other's files.
-fn test_folder(name: &str) -> PathBuf {
-    let folder = std::env::temp_dir().join(format!("paper_archive_test_{name}"));
-    let _ = std::fs::remove_dir_all(&folder); // left over from an earlier run
-    std::fs::create_dir_all(&folder).unwrap();
-    folder
+/// A made-up LLM answer, so these tests need no LLM.
+fn answer(folder: Option<&str>) -> LLMAnswer {
+    LLMAnswer {
+        folder: folder.map(String::from),
+        summary: "Ein Brief an Frau Müller.".to_string(),
+        letter_date: "2025-11-25".to_string(),
+        file_name: "Brief".to_string(),
+    }
 }
 
-/// Writes a one-page PDF with these lines of real text, top to bottom.
-fn write_pdf(path: &Path, lines: &[&str]) {
-    let (doc, page, layer) = NewPdf::new("test", Mm(210.0), Mm(297.0), "text");
-    let font_data = std::fs::read(FONT).unwrap();
-    let font = doc.add_external_font(font_data.as_slice()).unwrap();
-    let layer = doc.get_page(page).get_layer(layer);
-    for (number, line) in lines.iter().enumerate() {
-        let y = Mm(270.0 - 10.0 * number as f32);
-        layer.use_text(*line, 12.0, Mm(20.0), y, &font);
-    }
-    doc.save(&mut BufWriter::new(File::create(path).unwrap()))
-        .unwrap();
+/// Stores the PDF the way `analyze_place_pdf` does, with a made-up answer; its new id.
+fn store(archive: &mut PdfCrud, pdf: &Path) -> i64 {
+    let hash = file_sha256(pdf).unwrap();
+    let text = extract_text(pdf).unwrap();
+    archive
+        .insert_letter(pdf, &hash, &text, &answer(Some("Finanzamt")))
+        .unwrap()
 }
 
 const LETTER: [&str; 2] = ["Sehr geehrte Frau Müller,", "Größe der Straße"];
@@ -75,60 +68,68 @@ fn test_extract_text_fails_for_missing_file() {
 // ── Storing letters ──
 
 #[test]
-fn test_add_pdf_stores_text_and_relative_path() {
-    let folder = test_folder("store");
-    let pdf = folder.join("brief.pdf");
+fn test_insert_letter_stores_path_text_and_answer() {
+    let pdf = test_folder("store").join("brief.pdf");
     write_pdf(&pdf, &LETTER);
     let mut archive = PdfCrud::in_memory().unwrap();
 
-    let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
-        panic!("expected a new letter");
-    };
+    let id = store(&mut archive, &pdf);
+
     let document = archive.document(id).unwrap().unwrap();
     assert_eq!(document.id, id);
-    assert_eq!(document.file_path, "brief.pdf");
+    assert_eq!(Path::new(&document.file_path), pdf);
     assert_eq!(document.sha256.len(), 64);
     assert!(document.text.contains("Frau Müller"));
     assert_eq!(document.language, "de");
+    assert_eq!(document.summary, "Ein Brief an Frau Müller.");
+    assert_eq!(document.category, "Finanzamt");
+    assert_eq!(document.letter_date.as_deref(), Some("2025-11-25"));
 }
 
+/// No folder fit the letter: its category is empty.
 #[test]
-fn test_add_pdf_keeps_full_path_outside_folder() {
-    let pdf = test_folder("outside_pdf").join("brief.pdf");
+fn test_insert_letter_without_folder_has_empty_category() {
+    let pdf = test_folder("no_folder").join("brief.pdf");
     write_pdf(&pdf, &LETTER);
     let mut archive = PdfCrud::in_memory().unwrap();
 
-    let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
-        panic!("expected a new letter");
-    };
-    let stored = archive.document(id).unwrap().unwrap().file_path;
-    assert_eq!(Path::new(&stored), pdf.canonicalize().unwrap());
+    let id = archive
+        .insert_letter(&pdf, "abc", "text", &answer(None))
+        .unwrap();
+
+    assert_eq!(archive.document(id).unwrap().unwrap().category, "");
+}
+
+/// `sha256` is `UNIQUE`: the database itself refuses the same file twice.
+#[test]
+fn test_insert_letter_refuses_the_same_file_twice() {
+    let pdf = test_folder("twice").join("brief.pdf");
+    write_pdf(&pdf, &LETTER);
+    let mut archive = PdfCrud::in_memory().unwrap();
+    store(&mut archive, &pdf);
+
+    let hash = file_sha256(&pdf).unwrap();
+    assert!(archive.insert_letter(&pdf, &hash, "text", &answer(None)).is_err());
 }
 
 /// The same bytes are recognized, even when the file has another name.
 #[test]
-fn test_add_pdf_skips_a_letter_stored_before() {
-    let folder = test_folder("twice");
+fn test_find_by_hash_knows_the_same_bytes_under_another_name() {
+    let folder = test_folder("by_hash");
     let pdf = folder.join("brief.pdf");
     write_pdf(&pdf, &LETTER);
     let copy = folder.join("copy.pdf");
     std::fs::copy(&pdf, &copy).unwrap();
+    let other = folder.join("other.pdf");
+    write_pdf(&other, &["Ein anderer Brief"]);
     let mut archive = PdfCrud::in_memory().unwrap();
 
-    let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
-        panic!("expected a new letter");
-    };
-    assert_eq!(archive.add_pdf(&pdf).unwrap(), Added::AlreadyStored(id));
-    assert_eq!(archive.add_pdf(&copy).unwrap(), Added::AlreadyStored(id));
-}
+    let id = store(&mut archive, &pdf);
 
-#[test]
-fn test_add_pdf_names_the_missing_file() {
-    let mut archive = PdfCrud::in_memory().unwrap();
-    let error = archive
-        .add_pdf(Path::new("/no/such/letter.pdf"))
-        .unwrap_err();
-    assert!(error.to_string().contains("/no/such/letter.pdf"));
+    let copy_hash = file_sha256(&copy).unwrap();
+    assert_eq!(archive.find_by_hash(&copy_hash).unwrap(), Some(id));
+    let other_hash = file_sha256(&other).unwrap();
+    assert_eq!(archive.find_by_hash(&other_hash).unwrap(), None);
 }
 
 /// A letter stored in a database file is still there after opening it again.
@@ -139,10 +140,9 @@ fn test_open_keeps_letters_on_disk() {
     write_pdf(&pdf, &LETTER);
     let db_file = folder.join("archive.db");
 
-    let id = match PdfCrud::open(&db_file).unwrap().add_pdf(&pdf).unwrap() {
-        Added::New(id) => id,
-        other => panic!("expected a new letter, got {other:?}"),
-    }; // the first archive is dropped here, which closes the database
+    // `new` creates the file; the archive is dropped at the end of the line,
+    // which closes the database.
+    let id = store(&mut PdfCrud::new(&db_file).unwrap(), &pdf);
 
     let mut archive = PdfCrud::open(&db_file).unwrap();
     assert!(archive.document(id).unwrap().is_some());
@@ -165,10 +165,7 @@ fn archive_with(name: &str, letters: &[&[&str]]) -> (PdfCrud, Vec<i64>) {
     for (number, lines) in letters.iter().enumerate() {
         let pdf = folder.join(format!("letter_{number}.pdf"));
         write_pdf(&pdf, lines);
-        let Added::New(id) = archive.add_pdf(&pdf).unwrap() else {
-            panic!("expected a new letter");
-        };
-        ids.push(id);
+        ids.push(store(&mut archive, &pdf));
     }
     (archive, ids)
 }
@@ -185,7 +182,7 @@ fn test_search_finds_part_of_a_word() {
     let hits = archive.search("steuer").unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, ids[0]);
-    assert_eq!(hits[0].file_path, "letter_0.pdf");
+    assert!(hits[0].file_path.ends_with("letter_0.pdf"));
     let snippet = &hits[0].snippet;
     assert!(
         snippet.contains("Einkommen[steuer]bescheid"),
@@ -271,32 +268,6 @@ fn test_open_indexes_letters_stored_before() {
 
     let mut archive = PdfCrud::open(&db_file).unwrap();
     assert_eq!(found(&mut archive, "Finanzamt").len(), 1);
-}
-
-/// Template: stores a real letter in data/archive.db and prints its text.
-/// Run with `cargo test -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn test_add_pdf_template() {
-    let mut archive = PdfCrud::open(Path::new("data/archive.db")).unwrap();
-    let added = archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
-    archive.add_pdf(Path::new("data/IMG_7280.pdf")).unwrap();
-    let (Added::New(id) | Added::AlreadyStored(id)) = added;
-    archive.find_all(45).unwrap();
-    let document = archive.document(id).unwrap().unwrap();
-    println!("{added:?}: {}\n\n{}", document.file_path, document.text);
-}
-#[test]
-#[ignore]
-fn test_add_pdfs() {
-    let mut archive = PdfCrud::open(Path::new("data/archive.db")).unwrap();
-    archive.add_pdf(Path::new("data/IMG_9549.pdf")).unwrap();
-    archive
-        .add_pdf(Path::new("9_sprachnachweis_integr_b1.jpg"))
-        .unwrap();
-    let documents = archive.find_all(45).unwrap();
-    assert!(found(&mut archive, "Mahnung").is_empty());
-    assert!(documents.len() >= 2);
 }
 
 #[test]

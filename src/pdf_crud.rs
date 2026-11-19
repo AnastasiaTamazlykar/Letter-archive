@@ -1,6 +1,7 @@
 //! The letter archive: a small SQLite database with one row per PDF letter, holding
-//! a reference to the file and its full text. The entry point is a PDF path; the text
-//! is read from the PDF itself with Apple's PDFKit, so any PDF with a text layer works.
+//! a reference to the file and its full text. The text is read from the PDF itself with
+//! Apple's PDFKit, so any PDF with a text layer works. Letters come in through
+//! `analyze_place_pdf`, which asks the LLM first and then calls `insert_letter`.
 //! A full-text index (SQLite FTS5) makes the letters searchable.
 //!
 //! The database is reached through Diesel. Plain rows (`documents`) are read and written
@@ -18,10 +19,9 @@ use diesel::{
 use objc2::AnyThread;
 use objc2_foundation::{NSString, NSURL};
 use objc2_pdf_kit::PDFDocument;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::summarize_with_ai::ask_model;
+use crate::summarize_with_ai::LLMAnswer;
 use crate::{language, schema::documents};
 
 // The tests live in `src/pdf_crud/tests.rs`.
@@ -78,47 +78,6 @@ const CREATE_SEARCH: &str = "
 const MIN_WORD_LEN: usize = 3;
 
 
-#[derive(Debug, PartialEq, Deserialize)]
-pub enum LetterCategory {
-    Musik,
-    Finanzamt,
-    Rundfunkbeitrag,
-    Gesundheit,
-    Zahnarzt,
-    AutoVersicherung,
-    Datarobot,
-    Sonstiges,
-}
-
-impl LetterCategory {
-    pub const ALL: [LetterCategory; 8] = [
-        LetterCategory::Musik,
-        LetterCategory::Finanzamt,
-        LetterCategory::Rundfunkbeitrag,
-        LetterCategory::Gesundheit,
-        LetterCategory::Zahnarzt,
-        LetterCategory::AutoVersicherung,
-        LetterCategory::Datarobot,
-        LetterCategory::Sonstiges,
-    ];
-
-    pub fn from_name(name: &str) -> Option<LetterCategory> {
-        Self::ALL.into_iter().find(|cat| cat.name() == name)
-    }
-
-    pub fn name(&self) -> &'static str {
-        match &self {
-            LetterCategory::Finanzamt => "Finanzamt",
-            LetterCategory::Rundfunkbeitrag => "Rundfunkbeitrag",
-            LetterCategory::AutoVersicherung => "AutoVersicherung",
-            LetterCategory::Gesundheit => "Gesundheit",
-            LetterCategory::Zahnarzt => "Zahnarzt",
-            LetterCategory::Datarobot => "Datarobot",
-            LetterCategory::Sonstiges => "Sonstiges",
-            LetterCategory::Musik => "Musik",
-        }
-    }
-}
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = documents)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -151,21 +110,13 @@ pub struct SearchHit {
     pub summary: String,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Added {
-    /// The letter was new and is now stored under this id.
-    New(i64),
-    /// The same file (same bytes, maybe another name) was stored before under this id.
-    AlreadyStored(i64),
-}
-
 /// The open database.
 pub struct PdfCrud {
     db: SqliteConnection,
 }
 
 // `impl` holds the functions that belong to `PdfCrud`. Those taking `self` are called
-// on one (`pdf_crud.add_pdf(..)`); the others build one (`PdfCrud::open(..)`).
+// on one (`pdf_crud.insert_letter(..)`); the others build one (`PdfCrud::open(..)`).
 // Most take `&mut self`: Diesel needs the connection to itself (`&mut`) while a query
 // runs, so the borrow checker guarantees no two queries share it at once.
 impl PdfCrud {
@@ -190,45 +141,40 @@ impl PdfCrud {
         Ok(PdfCrud { db })
     }
 
-    /// The entry point: stores a PDF letter together with its text.
-    /// A file stored before is skipped, and its text is not read again.
-    pub fn add_pdf(&mut self, pdf: &Path) -> Result<Added, Box<dyn Error>> {
-        // Name the file in the error, so the user knows which one failed.
-        self.store(pdf)
-            .map_err(|e| format!("{}: {e}", pdf.display()).into())
-    }
-
     fn verify_date(date: &str)->Option<String>{
         use jiff::civil::Date;
         date.parse::<Date>().ok().map(|d| d.to_string())
     }
 
-    fn store(&mut self, pdf: &Path) -> Result<Added, Box<dyn Error>> {
-        let hash = file_sha256(pdf)?;
-        if let Some(id) = self.find_by_hash(&hash)? {
-            return Ok(Added::AlreadyStored(id));
-        }
-        let text = extract_text(pdf)?;
-        let model_answer = ask_model(&text)?;
+    /// Writes one letter's row: where the PDF is, its fingerprint, its text and what the
+    /// LLM said about it. Returns the new row's id. Only stores; reads and asks nothing.
+    pub fn insert_letter(
+        &mut self,
+        pdf: &Path,
+        hash: &str,
+        text: &str,
+        answer: &LLMAnswer,
+    ) -> Result<i64, Box<dyn Error>> {
         // let store date as text in iso format YYYY-MM-DD
-        let iso_letter_date = Self::verify_date(model_answer.letter_date.as_str());
+        let iso_letter_date = Self::verify_date(answer.letter_date.as_str());
         let id = diesel::insert_into(documents::table)
             .values((
                 documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?),
-                documents::sha256.eq(&hash),
-                documents::text.eq(&text),
-                documents::summary.eq(model_answer.summary),
+                documents::sha256.eq(hash),
+                documents::text.eq(text),
+                documents::summary.eq(&answer.summary),
                 documents::language.eq(language::LETTERS.short),
-                documents::category.eq(model_answer.category.name()),
+                // The folder the LLM chose is the letter's category; "" if none fit.
+                documents::category.eq(answer.folder.as_deref().unwrap_or("")),
                 documents::letter_date.eq(iso_letter_date)
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;
-        Ok(Added::New(id))
+        Ok(id)
     }
 
     /// The id of the letter with this fingerprint, if there is one.
-    fn find_by_hash(&mut self, hash: &str) -> QueryResult<Option<i64>> {
+    pub fn find_by_hash(&mut self, hash: &str) -> QueryResult<Option<i64>> {
         documents::table
             .filter(documents::sha256.eq(hash)) // WHERE sha256 = ?
             .select(documents::id) // SELECT id
@@ -346,7 +292,7 @@ pub fn extract_text(pdf: &Path) -> Result<String, Box<dyn Error>> {
 
 /// The SHA-256 fingerprint of a file's bytes, as 64 hex characters.
 /// Same bytes give the same fingerprint, whatever the file is called.
-fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
+pub fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
     let bytes = std::fs::read(path)?;
     let digest = Sha256::digest(&bytes);
     // Each byte becomes two hex digits, e.g. 10 -> "0a".

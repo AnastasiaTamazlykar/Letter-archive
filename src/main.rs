@@ -4,8 +4,12 @@ mod app;
 // The window only lists and adds letters so far; search, `new` and `document` are
 // used by the tests only. `allow` silences their "never used" warnings until it is.
 mod convert;
+mod store_analyze_pdf;
+mod folders;
 mod language;
 mod open_file;
+mod paths;
+mod pdf_name;
 mod pdf_pages;
 #[allow(dead_code)]
 mod pdf_crud;
@@ -13,6 +17,9 @@ mod pipeline;
 mod schema;
 
 mod summarize_with_ai;
+// Helpers for the tests of several modules; `cfg(test)`: left out of the app itself.
+#[cfg(test)]
+mod test_support;
 
 /// Size of the window when the app starts, in points (width, height).
 const WINDOW_SIZE: [f32; 2] = [1400.0, 900.0];
