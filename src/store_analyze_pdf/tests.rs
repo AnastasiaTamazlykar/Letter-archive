@@ -85,7 +85,7 @@ fn test_file_pdf_copies_and_records() {
 }
 
 /// Needs the local LLM server running. The letter is from the Finanzamt, so the LLM
-/// should pick that folder; the folder becomes the letter's category.
+/// should pick that folder.
 #[test]
 fn test_file_pdf_puts_the_file_in_the_chosen_folder() {
     let folder = test_folder("file_pdf_folder");
@@ -99,7 +99,6 @@ fn test_file_pdf_puts_the_file_in_the_chosen_folder() {
     let target = analyze_place_pdf(&input, &output, &mut crud).unwrap();
 
     assert_eq!(target.parent(), Some(output.join("Finanzamt").as_path()));
-    assert_eq!(crud.find_all(10).unwrap()[0].category, "Finanzamt");
 }
 
 #[test]
@@ -117,5 +116,28 @@ fn test_empty_folder() {
     let rescan_folders = scan_folders(&output).unwrap();
     let answer = ask_model(&text, &rescan_folders).unwrap();
     assert_eq!(answer.folder, None);//
+}
+
+/// The folder between the output folder and the file name, in two steps:
+/// 1. `strip_prefix` cuts the output folder off the front (an error if the path
+///    does not start with it): "Gesundheit/teeth/Zahnarzt.pdf".
+/// 2. `parent` drops the last part, the file name: "Gesundheit/teeth".
+///    For a file right in the output folder, that leaves the empty path "".
+/// Both work on whole path parts, not letters, so "data/pdfs/outputX" is no match.
+#[test]
+fn test_path() {
+    let output = Path::new(crate::paths::OUTPUT_DIR); // "data/pdfs/output"
+
+    let nested = Path::new("data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf");
+    let relative = nested.strip_prefix(output).unwrap();
+    assert_eq!(relative, Path::new("Gesundheit/teeth/Zahnarzt.pdf"));
+    assert_eq!(relative.parent(), Some(Path::new("Gesundheit/teeth")));
+
+    let in_root = Path::new("data/pdfs/output/ARD_ZDF_Deutschlandradio_Beitragsservice.pdf");
+    let relative = in_root.strip_prefix(output).unwrap();
+    assert_eq!(relative.parent(), Some(Path::new("")));
+
+    // A path outside the output folder: `strip_prefix` says so with an `Err`.
+    assert!(Path::new("data/pdfs/input/a.pdf").strip_prefix(output).is_err());
 }
 

@@ -82,22 +82,7 @@ fn test_insert_letter_stores_path_text_and_answer() {
     assert!(document.text.contains("Frau Müller"));
     assert_eq!(document.language, "de");
     assert_eq!(document.summary, "Ein Brief an Frau Müller.");
-    assert_eq!(document.category, "Finanzamt");
     assert_eq!(document.letter_date.as_deref(), Some("2025-11-25"));
-}
-
-/// No folder fit the letter: its category is empty.
-#[test]
-fn test_insert_letter_without_folder_has_empty_category() {
-    let pdf = test_folder("no_folder").join("brief.pdf");
-    write_pdf(&pdf, &LETTER);
-    let mut archive = PdfCrud::in_memory().unwrap();
-
-    let id = archive
-        .insert_letter(&pdf, "abc", "text", &answer(None))
-        .unwrap();
-
-    assert_eq!(archive.document(id).unwrap().unwrap().category, "");
 }
 
 /// `sha256` is `UNIQUE`: the database itself refuses the same file twice.

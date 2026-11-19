@@ -7,7 +7,6 @@ diesel::table! {
         summary -> Text,
         language -> Text,
         created_at -> Text,
-        category -> Text,
         letter_date -> Nullable<Text>,
     }
 }

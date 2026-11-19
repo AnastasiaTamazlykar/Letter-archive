@@ -657,7 +657,7 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
         click = file_link(ui, pdf.file_path);
     });
     row.col(|ui| {
-        ui.label(pdf.category);
+        ui.label(extract_category(pdf.file_path));
     });
     row.col(|ui| {
         ui.label(pdf.letter_date.unwrap_or("-"));
@@ -667,6 +667,21 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
             .on_hover_text(pdf.summary);
     });
     click
+}
+
+/// The folder a filed PDF sits in, below the output folder: "Gesundheit/teeth" for
+/// "data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf". "-" if the PDF lies right in the
+/// output folder, or outside it (for example a letter stored before filing existed).
+fn extract_category(file_path: &str) -> String {
+    let folder = Path::new(file_path)
+        .strip_prefix(OUTPUT_DIR)
+        // ok() converts error to None
+        .ok()
+        // and_then executes function only on not None
+        .and_then(|relative| relative.parent())
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .unwrap_or_default(); // `None` becomes ""
+    folder
 }
 
 fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
@@ -778,7 +793,6 @@ fn file_name(path: &Path) -> String {
 }
 
 struct PdfRow<'a> {
-    category: &'a str,
     summary: &'a str,
     letter_date: Option<&'a str>,
     file_path: &'a str,
@@ -787,7 +801,6 @@ struct PdfRow<'a> {
 impl<'a> From<&'a Document> for PdfRow<'a> {
     fn from(pdf: &'a Document) -> Self {
         PdfRow {
-            category: &pdf.category,
             summary: &pdf.summary,
             letter_date: pdf.letter_date.as_deref(),
             file_path: &pdf.file_path,
@@ -798,7 +811,6 @@ impl<'a> From<&'a Document> for PdfRow<'a> {
 impl<'a> From<&'a SearchHit> for PdfRow<'a> {
     fn from(hit: &'a SearchHit) -> Self {
         PdfRow {
-            category: &hit.category,
             summary: &hit.summary,
             letter_date: hit.letter_date.as_deref(),
             file_path: &hit.file_path,

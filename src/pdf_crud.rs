@@ -37,7 +37,6 @@ const CREATE_DOCUMENTS: &str = "
         id          INTEGER PRIMARY KEY,
         file_path   TEXT NOT NULL,
         sha256      TEXT NOT NULL UNIQUE,
-        category    TEXT,
         text        TEXT NOT NULL,
         summary TEXT NOT NULL,
         language    TEXT NOT NULL,
@@ -89,7 +88,6 @@ pub struct Document {
     pub summary: String,
     pub language: String,
     pub letter_date: Option<String>,
-    pub category: String,
 }
 
 
@@ -102,8 +100,6 @@ pub struct SearchHit {
     /// A short piece of the text around the match, with the match in [brackets].
     #[diesel(sql_type = Text)]
     pub snippet: String,
-    #[diesel(sql_type = Text)]
-    pub category: String,
     #[diesel(sql_type = Nullable<Text>)]
     pub letter_date: Option<String>,
     #[diesel(sql_type = Text)]
@@ -164,8 +160,6 @@ impl PdfCrud {
                 documents::text.eq(text),
                 documents::summary.eq(&answer.summary),
                 documents::language.eq(language::LETTERS.short),
-                // The folder the LLM chose is the letter's category; "" if none fit.
-                documents::category.eq(answer.folder.as_deref().unwrap_or("")),
                 documents::letter_date.eq(iso_letter_date)
             ))
             .returning(documents::id)
@@ -213,7 +207,7 @@ impl PdfCrud {
 
         sql_query(
             "SELECT documents.id AS id, documents.summary AS  summary,
-            documents.category as category,documents.letter_date AS letter_date, documents.file_path AS file_path,
+            documents.letter_date AS letter_date, documents.file_path AS file_path,
                     snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
              FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
              WHERE documents_fts MATCH ?
