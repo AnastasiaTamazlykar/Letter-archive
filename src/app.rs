@@ -2,7 +2,7 @@
 //! put them in order, tick some and file them as one analyzed PDF.
 
 use crate::open_file::{open_in_viewer, reveal_in_finder};
-use crate::pdf_crud::{Document, PdfCrud, SearchHit};
+use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
 use crate::paths::{DB_FILE, OUTPUT_DIR};
 use crate::{convert::Conversion, pipeline, rescan};
@@ -11,11 +11,9 @@ use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-// The table's sort and filter live in `src/app/sort_filter.rs`.
+// The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
 mod sort_filter;
-use sort_filter::{
-    DateOrder, categories, category_menu, date_order_menu, filter_by_category, sort_by_date,
-};
+use sort_filter::{category_menu, date_order_menu};
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
@@ -129,6 +127,8 @@ pub struct App {
     date_order: DateOrder,
     /// The category the table shows; `None`: all of them.
     category: Option<String>,
+    /// The choices of the category menu, from the database.
+    categories: Vec<String>,
 }
 
 impl eframe::App for App {
@@ -181,11 +181,14 @@ impl App {
             search: "".to_string(),
             date_order: DateOrder::default(),
             category: None,
+            categories: vec![],
         }
     }
 
+    /// Up to `limit` letters, in the chosen order and category; the database sorts and filters.
     fn load_pdfs(&mut self, limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
-        Ok(self.crud.find_all(limit)?)
+        let category = self.category.as_deref();
+        Ok(self.crud.find_letters(self.date_order, category, limit)?)
     }
 
     /// Fixes the paths of PDFs moved inside the output folder and removes letters whose
@@ -205,6 +208,31 @@ impl App {
                 self.pdfs = pdfs;
             }
             Err(err) => eprintln!("Pdfs were not loaded {}", err),
+        }
+        match self.crud.categories() {
+            Ok(categories) => self.categories = categories,
+            Err(error) => eprintln!("categories were not loaded: {error}"),
+        }
+    }
+
+    /// Searches the letters for what is typed, in the chosen order and category.
+    fn run_search(&mut self) {
+        let category = self.category.as_deref();
+        self.hits = match self.crud.search_letters(&self.search, self.date_order, category) {
+            Ok(hits) => hits,
+            Err(error) => {
+                eprintln!("search failed: {error}");
+                vec![]
+            }
+        };
+    }
+
+    /// Loads the table again after the order or category changed: the letters, and the
+    /// search results if a search is shown.
+    fn reload_table(&mut self) {
+        self.set_pdfs();
+        if !self.search.is_empty() {
+            self.run_search();
         }
     }
 
@@ -270,7 +298,7 @@ impl App {
                 })
                 .inner;
             if search_box.lost_focus() {
-                self.hits = self.crud.search(self.search.as_str()).unwrap();
+                self.run_search();
             }
             //  once search fields is cleared, results are also cleared
             if self.search.is_empty() {
@@ -278,15 +306,15 @@ impl App {
             }
         });
         ui.add_space(SEARCH_GAP);
-        let mut rows: Vec<PdfRow> = if !self.search.is_empty() {
+        // Already sorted and filtered by the database.
+        let rows: Vec<PdfRow> = if !self.search.is_empty() {
             self.hits.iter().map(PdfRow::from).collect()
         } else {
             self.pdfs.iter().map(PdfRow::from).collect()
         };
-        // The menu's choices come from all rows, before the filter takes some away.
-        let choices = categories(&rows);
-        filter_by_category(&mut rows, self.category.as_deref());
-        sort_by_date(&mut rows, self.date_order);
+        // Kept to see after the table whether its menus changed the order or category.
+        let old_order = self.date_order;
+        let old_category = self.category.clone();
 
         // A strip splits the space into cells side by side: the table on the left, the
         // divider, the PDF on the right. `clip`: no cell can draw over another.
@@ -310,7 +338,7 @@ impl App {
                         &rows,
                         &mut self.date_order,
                         &mut self.category,
-                        &choices,
+                        &self.categories,
                     );
                 });
                 strip.cell(|ui| {
@@ -330,6 +358,12 @@ impl App {
 
         if close {
             self.pdf_view = None;
+        }
+        // A new choice in a header menu: ask the database again, and draw the next frame
+        // right away so the new rows show without waiting for the mouse to move.
+        if self.date_order != old_order || self.category != old_category {
+            self.reload_table();
+            ui.ctx().request_repaint();
         }
         if let Some(click) = click {
             self.act_on_pdf_click(ui.ctx(), click);

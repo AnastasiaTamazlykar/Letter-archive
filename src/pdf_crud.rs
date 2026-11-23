@@ -29,6 +29,11 @@ use crate::paths::OUTPUT_DIR;
 #[cfg(test)]
 mod tests;
 
+// Sorting and filtering the letters, in `src/pdf_crud/sort_filter.rs`.
+mod sort_filter;
+// `pub use`: others can write `pdf_crud::DateOrder`, not knowing the module inside.
+pub use sort_filter::DateOrder;
+
 /// One row per letter. `sha256` is `UNIQUE`: the same file can never be stored twice.
 /// `IF NOT EXISTS` makes it safe to run every time the database is opened.
 /// `created_at` is filled in by SQLite itself (in UTC).
