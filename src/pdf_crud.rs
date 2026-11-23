@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 
 use crate::summarize_with_ai::LLMAnswer;
 use crate::{language, schema::documents};
+use crate::paths::OUTPUT_DIR;
 
 // The tests live in `src/pdf_crud/tests.rs`.
 #[cfg(test)]
@@ -88,6 +89,7 @@ pub struct Document {
     pub summary: String,
     pub language: String,
     pub letter_date: Option<String>,
+    pub category: String,
 }
 
 /// Where a stored letter's PDF should be, and its fingerprint; what the rescan needs.
@@ -105,6 +107,8 @@ pub struct SearchHit {
     pub id: i64,
     #[diesel(sql_type = Text)]
     pub file_path: String,
+    #[diesel(sql_type = Text)]
+    pub category: String,
     /// A short piece of the text around the match, with the match in [brackets].
     #[diesel(sql_type = Text)]
     pub snippet: String,
@@ -168,7 +172,8 @@ impl PdfCrud {
                 documents::text.eq(text),
                 documents::summary.eq(&answer.summary),
                 documents::language.eq(language::LETTERS.short),
-                documents::letter_date.eq(iso_letter_date)
+                documents::letter_date.eq(iso_letter_date),
+                documents::category.eq(Self::extract_category(pdf))
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;
@@ -181,11 +186,26 @@ impl PdfCrud {
             .select((documents::id, documents::file_path, documents::sha256))
             .load(&mut self.db)
     }
-
+    /// The folder a filed PDF sits in, below the output folder: "Gesundheit/teeth" for
+    /// "data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf". "-" if the PDF lies right in the
+    /// output folder, or outside it (for example a letter stored before filing existed).
+    fn extract_category(file_path: &Path) -> String {
+        let folder = file_path
+            .strip_prefix(OUTPUT_DIR)
+            // ok() converts error to None
+            .ok()
+            // and_then executes function only on not None
+            .and_then(|relative| relative.parent())
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_default(); // `None` becomes ""
+        folder
+    }
     /// Changes where a letter's PDF is, for one letter.
-    pub fn update_file_path(&mut self, id: i64, pdf: &Path) -> Result<(), Box<dyn Error>> {
+    pub fn update_file_path_category(&mut self, id: i64, path: &Path) -> Result<(), Box<dyn Error>> {
+        let category = Self::extract_category(path);
         diesel::update(documents::table.find(id)) // UPDATE documents WHERE id = ?
-            .set(documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?))
+            .set((documents::file_path.eq(path.to_str().ok_or("path is not UTF-8")?),
+                 documents::category.eq(category)))
             .execute(&mut self.db)?;
         Ok(())
     }

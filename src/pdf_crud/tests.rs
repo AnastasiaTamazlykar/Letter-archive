@@ -148,7 +148,7 @@ fn test_update_file_path_changes_only_that_row() {
     let other_id = store(&mut archive, &other);
 
     let new_path = folder.join("Finanzamt").join("moved.pdf");
-    archive.update_file_path(moved_id, &new_path).unwrap();
+    archive.update_file_path_category(moved_id, &new_path).unwrap();
 
     let path_of = |archive: &mut PdfCrud, id| archive.document(id).unwrap().unwrap().file_path;
     assert_eq!(Path::new(&path_of(&mut archive, moved_id)), new_path);

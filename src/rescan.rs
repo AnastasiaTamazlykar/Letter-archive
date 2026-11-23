@@ -62,7 +62,7 @@ pub fn rescan(crud: &mut PdfCrud, output_dir: &Path) -> Result<Rescan, Box<dyn E
     for file in missing {
         match by_hash.get(&file.sha256) {
             Some(new_path) => {
-                crud.update_file_path(file.id, new_path)?;
+                crud.update_file_path_category(file.id, new_path)?;
                 report.moved += 1;
             }
             None => {

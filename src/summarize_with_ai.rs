@@ -28,7 +28,7 @@ struct Parsed {
 const SERVER_URL: &str = "http://localhost:8080/v1/chat/completions";
 const PROMPT: &str = "Please summarize this letter in several sentences in german.
 Respond with only a JSON object, no Markdown, with 4 keys: 'folder', 'summary', 'letter_date' and 'file_name'.
- 'file_name' is a short name for the letter's file, without ending and spaces, like '2025_11_25_Rundfunkbeitrag_Beitragsservice': date, topic, sender.
+ 'file_name' is a short name for the letter's file, without ending and spaces, must summarize a letter intention und uniqueness in 3 words, shortenings allowed.
  For 'folder' choose the most suitable folder for this letter from this list, or \"\" if none fits:
  {FOLDERS}. letter date can be empty if not found, otherwise return in iso format. For summary nenne Absender, Anliegen und Fristen. Letter text : ";
 

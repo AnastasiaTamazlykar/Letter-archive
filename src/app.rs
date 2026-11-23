@@ -11,6 +11,12 @@ use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+// The table's sort and filter live in `src/app/sort_filter.rs`.
+mod sort_filter;
+use sort_filter::{
+    DateOrder, categories, category_menu, date_order_menu, filter_by_category, sort_by_date,
+};
+
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
 /// Height of one row of the PDF table, in points.
@@ -37,6 +43,10 @@ const PDF_VIEW_SHARE_MIN: f32 = 0.2;
 const PDF_VIEW_SHARE_MAX: f32 = 0.8;
 /// Width of the draggable divider between the table and the PDF area, in points.
 const DIVIDER_WIDTH: f32 = 8.0;
+/// Width of the search box, in points: wide enough to show its whole hint text.
+const SEARCH_WIDTH: f32 = 400.0;
+/// Empty space above and below the search box, in points.
+const SEARCH_GAP: f32 = 8.0;
 
 /// One added image and its thumbnail.
 struct Picture {
@@ -112,7 +122,13 @@ pub struct App {
     conversion: Option<Conversion>,
     /// What the last conversion did, shown next to the buttons that start one.
     status: String,
+    /// What the last rescan did; shown in the Archive tab only.
+    rescan_status: String,
     search: String,
+    /// How the table is ordered by letter date.
+    date_order: DateOrder,
+    /// The category the table shows; `None`: all of them.
+    category: Option<String>,
 }
 
 impl eframe::App for App {
@@ -161,7 +177,10 @@ impl App {
             pdf_view_share: PDF_VIEW_SHARE,
             conversion: None,
             status: "".to_string(),
+            rescan_status: "".to_string(),
             search: "".to_string(),
+            date_order: DateOrder::default(),
+            category: None,
         }
     }
 
@@ -173,7 +192,7 @@ impl App {
     /// PDF is gone (see `rescan.rs`), shows what it did, then reloads the table.
     /// Runs at startup and from the Rescan button.
     pub fn rescan(&mut self) {
-        self.status = match rescan::rescan(&mut self.crud, Path::new(OUTPUT_DIR)) {
+        self.rescan_status = match rescan::rescan(&mut self.crud, Path::new(OUTPUT_DIR)) {
             Ok(report) => report.summary(),
             Err(error) => format!("Rescan failed: {error}"),
         };
@@ -228,6 +247,12 @@ impl App {
             {
                 self.rescan();
             }
+            self.conversion_status(ui);
+            ui.label(&self.rescan_status);
+        });
+        // The search box gets a row of its own, below the buttons, with space around it.
+        ui.add_space(SEARCH_GAP);
+        ui.horizontal(|ui| {
             let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
             let search_box = ui
                 .scope(|ui| {
@@ -239,7 +264,8 @@ impl App {
                     }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("Search… enter at least 3 symbols"),
+                            .hint_text("Search document by text… enter at least 3 symbols")
+                            .desired_width(SEARCH_WIDTH),
                     )
                 })
                 .inner;
@@ -250,13 +276,17 @@ impl App {
             if self.search.is_empty() {
                 self.hits = vec![];
             }
-            self.conversion_status(ui);
         });
-        let rows: Vec<PdfRow> = if !self.search.is_empty() {
+        ui.add_space(SEARCH_GAP);
+        let mut rows: Vec<PdfRow> = if !self.search.is_empty() {
             self.hits.iter().map(PdfRow::from).collect()
         } else {
             self.pdfs.iter().map(PdfRow::from).collect()
         };
+        // The menu's choices come from all rows, before the filter takes some away.
+        let choices = categories(&rows);
+        filter_by_category(&mut rows, self.category.as_deref());
+        sort_by_date(&mut rows, self.date_order);
 
         // A strip splits the space into cells side by side: the table on the left, the
         // divider, the PDF on the right. `clip`: no cell can draw over another.
@@ -272,7 +302,16 @@ impl App {
             .size(Size::remainder())
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
-                    click = display_pdfs(ui, &rows);
+                    // `rows` borrows `self.pdfs` (or `self.hits`) while the header's menus
+                    // change `self.date_order` and `self.category`. Rust allows this: they
+                    // are different fields of `self`.
+                    click = display_pdfs(
+                        ui,
+                        &rows,
+                        &mut self.date_order,
+                        &mut self.category,
+                        &choices,
+                    );
                 });
                 strip.cell(|ui| {
                     dragged = divider(ui);
@@ -633,14 +672,22 @@ fn thumbnail_button(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::R
 }
 
 /// Draws the table of PDFs and returns what was clicked on a file name, if anything.
-fn display_pdfs(ui: &mut egui::Ui, rows: &[PdfRow]) -> Option<PdfClick> {
+/// The Category and Letter date headers hold menus that change `category` and `order`.
+fn display_pdfs(
+    ui: &mut egui::Ui,
+    rows: &[PdfRow],
+    order: &mut DateOrder,
+    category: &mut Option<String>,
+    categories: &[String],
+) -> Option<PdfClick> {
     // The row closures below assign to `click`; they borrow it mutably one after another.
     let mut click = None;
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::initial(120.0).resizable(true).clip(true))
         .column(Column::initial(120.0).resizable(true).clip(true))
-        .column(Column::initial(100.0).resizable(true).clip(true))
+        // Letter date: wide enough for its menu's "Newest first".
+        .column(Column::initial(120.0).resizable(true).clip(true))
         // The last column takes the rest of the width, so no empty column is left after it.
         .column(Column::remainder().clip(true))
         .header(PDF_ROW_HEIGHT, |mut header| {
@@ -648,11 +695,18 @@ fn display_pdfs(ui: &mut egui::Ui, rows: &[PdfRow]) -> Option<PdfClick> {
             header.col(|ui| {
                 ui.strong("File");
             });
+            // `vertical`: the menu goes under the header's name, not beside it.
             header.col(|ui| {
-                ui.strong("Category");
+                ui.vertical(|ui| {
+                    ui.strong("Category");
+                    category_menu(ui, category, categories);
+                });
             });
             header.col(|ui| {
-                ui.strong("Letter date");
+                ui.vertical(|ui| {
+                    ui.strong("Letter date");
+                    date_order_menu(ui, order);
+                });
             });
             header.col(|ui| {
                 ui.strong("Summary");
@@ -677,7 +731,7 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
         click = file_link(ui, pdf.file_path);
     });
     row.col(|ui| {
-        ui.label(extract_category(pdf.file_path));
+        ui.label(pdf.category);
     });
     row.col(|ui| {
         ui.label(pdf.letter_date.unwrap_or("-"));
@@ -689,20 +743,6 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
     click
 }
 
-/// The folder a filed PDF sits in, below the output folder: "Gesundheit/teeth" for
-/// "data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf". "-" if the PDF lies right in the
-/// output folder, or outside it (for example a letter stored before filing existed).
-fn extract_category(file_path: &str) -> String {
-    let folder = Path::new(file_path)
-        .strip_prefix(OUTPUT_DIR)
-        // ok() converts error to None
-        .ok()
-        // and_then executes function only on not None
-        .and_then(|relative| relative.parent())
-        .map(|folder| folder.to_string_lossy().into_owned())
-        .unwrap_or_default(); // `None` becomes ""
-    folder
-}
 
 fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
     let name = file_name(Path::new(file_path));
@@ -816,6 +856,7 @@ struct PdfRow<'a> {
     summary: &'a str,
     letter_date: Option<&'a str>,
     file_path: &'a str,
+    category: &'a str,
 }
 
 impl<'a> From<&'a Document> for PdfRow<'a> {
@@ -824,6 +865,7 @@ impl<'a> From<&'a Document> for PdfRow<'a> {
             summary: &pdf.summary,
             letter_date: pdf.letter_date.as_deref(),
             file_path: &pdf.file_path,
+            category: &pdf.category,
         }
     }
 }
@@ -834,6 +876,7 @@ impl<'a> From<&'a SearchHit> for PdfRow<'a> {
             summary: &hit.summary,
             letter_date: hit.letter_date.as_deref(),
             file_path: &hit.file_path,
+            category: &hit.category,
         }
     }
 }
