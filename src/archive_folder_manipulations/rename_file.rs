@@ -6,7 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{path_change::change_path, pdf_crud::PdfCrud, pdf_name::safe_file_name};
+// `super` is the parent module, `archive_folder_manipulations`; `path_change` is its sibling.
+use super::path_change::change_path;
+use crate::{pdf_crud::PdfCrud, pdf_name::safe_file_name};
 
 // The tests live in `src/rename_pdf/tests.rs`.
 #[cfg(test)]

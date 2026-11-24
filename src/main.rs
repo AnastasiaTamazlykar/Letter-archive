@@ -7,13 +7,11 @@ mod convert;
 mod store_analyze_pdf;
 mod folders;
 mod language;
-mod move_archive;
+mod archive_folder_manipulations;
 mod open_file;
 mod paths;
 mod pdf_name;
 mod pdf_pages;
-mod path_change;
-mod rename_pdf;
 #[allow(dead_code)]
 mod pdf_crud;
 mod pipeline;

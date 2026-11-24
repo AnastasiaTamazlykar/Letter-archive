@@ -5,9 +5,9 @@ use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
 use crate::paths::{DB_FILE, SETTINGS_FILE};
-use crate::move_archive::move_archive;
-use crate::path_change::change_category;
-use crate::rename_pdf::rename_pdf;
+use crate::archive_folder_manipulations::{
+    move_archive::move_archive, path_change::change_category, rename_file::rename_pdf,
+};
 use crate::settings::Settings;
 use crate::{convert::Conversion, pipeline, rescan};
 use eframe::egui;
