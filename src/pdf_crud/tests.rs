@@ -32,12 +32,18 @@ fn answer(folder: Option<&str>) -> LLMAnswer {
 }
 
 /// Stores the PDF the way `analyze_place_pdf` does, with a made-up answer; its new id.
+/// The PDF's own folder plays the output folder, so the stored path is its file name.
 fn store(archive: &mut PdfCrud, pdf: &Path) -> i64 {
     let hash = file_sha256(pdf).unwrap();
     let text = extract_text(pdf).unwrap();
     archive
-        .insert_letter(pdf, &hash, &text, &answer(Some("Finanzamt")))
+        .insert_letter(in_own_folder(pdf), &hash, &text, &answer(Some("Finanzamt")))
         .unwrap()
+}
+
+/// The path of `pdf` inside its own folder: just its file name, "brief.pdf".
+fn in_own_folder(pdf: &Path) -> &Path {
+    Path::new(pdf.file_name().unwrap())
 }
 
 const LETTER: [&str; 2] = ["Sehr geehrte Frau Müller,", "Größe der Straße"];
@@ -77,7 +83,8 @@ fn test_insert_letter_stores_path_text_and_answer() {
 
     let document = archive.document(id).unwrap().unwrap();
     assert_eq!(document.id, id);
-    assert_eq!(Path::new(&document.file_path), pdf);
+    assert_eq!(document.file_path, "brief.pdf"); // the path inside the output folder
+    assert_eq!(document.category, ""); // right in the output folder, no subfolder
     assert_eq!(document.sha256.len(), 64);
     assert!(document.text.contains("Frau Müller"));
     assert_eq!(document.language, "de");
@@ -94,7 +101,8 @@ fn test_insert_letter_refuses_the_same_file_twice() {
     store(&mut archive, &pdf);
 
     let hash = file_sha256(&pdf).unwrap();
-    assert!(archive.insert_letter(&pdf, &hash, "text", &answer(None)).is_err());
+    let relative = in_own_folder(&pdf);
+    assert!(archive.insert_letter(relative, &hash, "text", &answer(None)).is_err());
 }
 
 /// The same bytes are recognized, even when the file has another name.
@@ -132,7 +140,7 @@ fn test_stored_files_returns_every_row() {
 
     let ids: Vec<i64> = stored.iter().map(|file| file.id).collect();
     assert_eq!(ids, [first_id, second_id]);
-    assert_eq!(Path::new(&stored[0].file_path), first);
+    assert_eq!(stored[0].file_path, "first.pdf");
     assert_eq!(stored[0].sha256, file_sha256(&first).unwrap());
 }
 
@@ -147,12 +155,13 @@ fn test_update_file_path_changes_only_that_row() {
     let moved_id = store(&mut archive, &moved);
     let other_id = store(&mut archive, &other);
 
-    let new_path = folder.join("Finanzamt").join("moved.pdf");
-    archive.update_file_path_category(moved_id, &new_path).unwrap();
+    let new_path = Path::new("Finanzamt/moved.pdf"); // inside the output folder
+    archive.update_file_path_category(moved_id, new_path, &folder).unwrap();
 
-    let path_of = |archive: &mut PdfCrud, id| archive.document(id).unwrap().unwrap().file_path;
-    assert_eq!(Path::new(&path_of(&mut archive, moved_id)), new_path);
-    assert_eq!(Path::new(&path_of(&mut archive, other_id)), other);
+    let moved_row = archive.document(moved_id).unwrap().unwrap();
+    assert_eq!(moved_row.file_path, "Finanzamt/moved.pdf");
+    assert_eq!(moved_row.category, "Finanzamt");
+    assert_eq!(archive.document(other_id).unwrap().unwrap().file_path, "other.pdf");
 }
 
 #[test]
@@ -297,6 +306,7 @@ fn test_open_indexes_letters_stored_before() {
             documents::file_path.eq("alt.pdf"),
             documents::sha256.eq("abc"),
             documents::text.eq("Brief vom Finanzamt"),
+            documents::summary.eq(""), // `summary` is NOT NULL, so it must be given
             documents::language.eq("de"),
         ))
         .execute(&mut old)

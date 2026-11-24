@@ -7,5 +7,9 @@ pub const DB_FILE: &str = "data/archive.db";
 /// Where PDFs wait to be analyzed, for example the PDF made from images.
 pub const INPUT_DIR: &str = "data/pdfs/input";
 
-/// Where analyzed PDFs are copied to, under the name the LLM suggests.
+/// Where analyzed PDFs are copied to at first, under the name the LLM suggests.
+/// The Settings tab can choose another folder (see `settings.rs`).
 pub const OUTPUT_DIR: &str = "data/pdfs/output";
+
+/// The user's settings (see `settings.rs`).
+pub const SETTINGS_FILE: &str = "data/settings.json";

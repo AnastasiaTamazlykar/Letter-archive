@@ -4,7 +4,9 @@
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
-use crate::paths::{DB_FILE, OUTPUT_DIR};
+use crate::paths::{DB_FILE, SETTINGS_FILE};
+use crate::move_archive::move_archive;
+use crate::settings::Settings;
 use crate::{convert::Conversion, pipeline, rescan};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
@@ -83,13 +85,14 @@ enum CardClick {
     MoveLater,
 }
 
+/// What was clicked on a file name; each holds the PDF's full path.
 enum PdfClick {
     /// A left click: show it in the area right of the table.
-    Show(String),
+    Show(PathBuf),
     /// "Open" in the right-click menu: open it in the PDF app.
-    Open(String),
+    Open(PathBuf),
     /// "Show in Finder" in the right-click menu.
-    Reveal(String),
+    Reveal(PathBuf),
 }
 
 /// The pages of the window, picked with the buttons at the top.
@@ -100,6 +103,7 @@ enum Tab {
     #[default]
     Archive,
     Images,
+    Settings,
 }
 
 /// Everything the window remembers between frames.
@@ -129,6 +133,10 @@ pub struct App {
     category: Option<String>,
     /// The choices of the category menu, from the database.
     categories: Vec<String>,
+    /// The user's settings, read from `SETTINGS_FILE` at the start.
+    settings: Settings,
+    /// Whether the last change in the Settings tab was saved; shown there.
+    settings_status: String,
 }
 
 impl eframe::App for App {
@@ -145,11 +153,13 @@ impl eframe::App for App {
                 // `selectable_value` sets `self.tab` to the given tab when clicked.
                 ui.selectable_value(&mut self.tab, Tab::Archive, "Archive");
                 ui.selectable_value(&mut self.tab, Tab::Images, "Images → PDF");
+                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
             });
             ui.separator();
             match self.tab {
                 Tab::Archive => self.archive_tab(ui),
                 Tab::Images => self.images_tab(ui),
+                Tab::Settings => self.settings_tab(ui),
             }
         });
         self.show_preview(ui.ctx(), preview_size);
@@ -182,6 +192,8 @@ impl App {
             date_order: DateOrder::default(),
             category: None,
             categories: vec![],
+            settings: Settings::load(Path::new(SETTINGS_FILE)),
+            settings_status: "".to_string(),
         }
     }
 
@@ -195,7 +207,7 @@ impl App {
     /// PDF is gone (see `rescan.rs`), shows what it did, then reloads the table.
     /// Runs at startup and from the Rescan button.
     pub fn rescan(&mut self) {
-        self.rescan_status = match rescan::rescan(&mut self.crud, Path::new(OUTPUT_DIR)) {
+        self.rescan_status = match rescan::rescan(&mut self.crud, &self.settings.output_dir) {
             Ok(report) => report.summary(),
             Err(error) => format!("Rescan failed: {error}"),
         };
@@ -255,13 +267,15 @@ impl App {
 
     /// The main page: a + button to add a PDF, and the table of stored PDFs.
     fn archive_tab(&mut self, ui: &mut egui::Ui) {
+        // `display()`: a path as text to show; it may not be valid UTF-8, so no plain `{}`.
+        let output_dir = self.settings.output_dir.display().to_string();
         ui.horizontal(|ui| {
             ui.label("Processed PDFs");
             // One letter at a time: greyed out while a conversion runs.
             let button = egui::Button::new("Analyze & file PDF…");
             if ui
                 .add_enabled(self.conversion.is_none(), button)
-                .on_hover_text(format!("Pick a PDF; a copy goes to {OUTPUT_DIR}"))
+                .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
                 .clicked()
             {
                 self.pick_pdf(ui.ctx());
@@ -269,7 +283,7 @@ impl App {
             if ui
                 .add_enabled(self.conversion.is_none(), egui::Button::new("Rescan"))
                 .on_hover_text(format!(
-                    "Find moved PDFs in {OUTPUT_DIR}; remove letters whose PDF is gone"
+                    "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
                 ))
                 .clicked()
             {
@@ -307,10 +321,11 @@ impl App {
         });
         ui.add_space(SEARCH_GAP);
         // Already sorted and filtered by the database.
+        let root = &self.settings.output_dir;
         let rows: Vec<PdfRow> = if !self.search.is_empty() {
-            self.hits.iter().map(PdfRow::from).collect()
+            self.hits.iter().map(|hit| PdfRow::of_hit(hit, root)).collect()
         } else {
-            self.pdfs.iter().map(PdfRow::from).collect()
+            self.pdfs.iter().map(|pdf| PdfRow::of_document(pdf, root)).collect()
         };
         // Kept to see after the table whether its menus changed the order or category.
         let old_order = self.date_order;
@@ -376,20 +391,20 @@ impl App {
     fn act_on_pdf_click(&mut self, ctx: &egui::Context, click: PdfClick) {
         let (path, result) = match click {
             PdfClick::Show(path) => {
-                self.show_pdf(ctx, Path::new(&path));
+                self.show_pdf(ctx, &path);
                 return;
             }
             PdfClick::Open(path) => {
-                let result = open_in_viewer(Path::new(&path));
+                let result = open_in_viewer(&path);
                 (path, result)
             }
             PdfClick::Reveal(path) => {
-                let result = reveal_in_finder(Path::new(&path));
+                let result = reveal_in_finder(&path);
                 (path, result)
             }
         };
         if let Err(error) = result {
-            eprintln!("cannot open {path}: {error}");
+            eprintln!("cannot open {}: {error}", path.display());
         }
     }
 
@@ -438,7 +453,8 @@ impl App {
             return;
         };
         self.status.clear();
-        self.conversion = Some(Conversion::start_pdf(pdf, ctx.clone()));
+        let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
+        self.conversion = Some(Conversion::start_pdf(pdf, output_dir, ctx.clone()));
     }
 
     /// Adds one file if it is an image and not in the list yet, and makes its thumbnail.
@@ -477,7 +493,7 @@ impl App {
             if response.clicked() {
                 self.start_conversion(ui.ctx(), selected);
             }
-            ui.weak(format!("→ {OUTPUT_DIR}"));
+            ui.weak(format!("→ {}", self.settings.output_dir.display()));
             self.conversion_status(ui);
         });
     }
@@ -499,7 +515,81 @@ impl App {
     fn start_conversion(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
         self.status.clear();
         // `clone` gives the thread its own handle to the window; both point to the same one.
-        self.conversion = Some(Conversion::start_images(images, ctx.clone()));
+        let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
+        self.conversion = Some(Conversion::start_images(images, output_dir, ctx.clone()));
+    }
+
+    /// The Settings tab: the output folder, with a button to choose another one.
+    fn settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Output folder:");
+            ui.monospace(self.settings.output_dir.display().to_string())
+                .on_hover_text("Where analyzed PDFs are copied to; its subfolders are the categories");
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button("Locate…")
+                .on_hover_text("You moved or renamed the folder yourself: point to its new place. Nothing is moved.")
+                .clicked()
+            {
+                self.pick_output_dir();
+            }
+            // Not while a letter is being filed: it would be copied into the old place.
+            let move_button = egui::Button::new("Move archive to…");
+            if ui
+                .add_enabled(self.conversion.is_none(), move_button)
+                .on_hover_text("Moves the folder with all its PDFs into an empty folder you choose")
+                .on_disabled_hover_text("Wait until the letter being filed is done")
+                .clicked()
+            {
+                self.move_archive_to();
+            }
+        });
+        ui.label(&self.settings_status);
+    }
+
+    /// Asks for an empty folder with the macOS Open panel and moves the archive folder
+    /// there (see `move_archive.rs`), then keeps that place as the output folder and
+    /// rescans, to check every letter is found there. Does nothing on Cancel.
+    fn move_archive_to(&mut self) {
+        let Some(target) = rfd::FileDialog::new()
+            .set_title("Choose an empty folder for the archive (New Folder makes one)")
+            .pick_folder()
+        else {
+            return;
+        };
+        if let Err(error) = move_archive(&self.settings.output_dir, &target) {
+            self.settings_status = format!("Not moved: {error}");
+            return;
+        }
+        let place = target.display().to_string();
+        self.settings.output_dir = target;
+        self.settings_status = match self.settings.save(Path::new(SETTINGS_FILE)) {
+            Ok(()) => format!("Moved to {place}."),
+            // Without the saved setting, the next start would look in the old place.
+            Err(error) => format!("Moved to {place}, but the setting was not saved: {error}"),
+        };
+        self.rescan(); // its result shows in the Archive tab
+    }
+
+    /// Asks for a folder with the macOS Open panel and keeps it as the output folder,
+    /// saved for the next start; does nothing on Cancel. PDFs filed so far stay where they are.
+    fn pick_output_dir(&mut self) {
+        // The panel opens in the current output folder; it needs a full path for that.
+        let current = std::path::absolute(&self.settings.output_dir).unwrap_or_default();
+        let Some(folder) = rfd::FileDialog::new()
+            .set_title("Choose the output folder")
+            .set_directory(current)
+            .pick_folder()
+        else {
+            return;
+        };
+        self.settings.output_dir = folder;
+        self.settings_status = match self.settings.save(Path::new(SETTINGS_FILE)) {
+            Ok(()) => "Saved."
+                .to_string(),
+            Err(error) => format!("Could not save the settings: {error}"),
+        };
     }
 
     /// Collects news from the running conversion; when it is done, keeps its summary.
@@ -762,7 +852,7 @@ fn display_pdfs(
 fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
     let mut click = None;
     row.col(|ui| {
-        click = file_link(ui, pdf.file_path);
+        click = file_link(ui, &pdf.path);
     });
     row.col(|ui| {
         ui.label(pdf.category);
@@ -778,8 +868,10 @@ fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
 }
 
 
-fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
-    let name = file_name(Path::new(file_path));
+/// The PDF's file name as a link; hovering shows its full `path`. A click shows the PDF,
+/// a right click offers to open it or show it in Finder.
+fn file_link(ui: &mut egui::Ui, path: &Path) -> Option<PdfClick> {
+    let name = file_name(path);
     // A `Label` (not `ui.link`) so long names can still be cut with "…" by `truncate`.
     let text = egui::RichText::new(name)
         .underline()
@@ -791,20 +883,20 @@ fn file_link(ui: &mut egui::Ui, file_path: &str) -> Option<PdfClick> {
                 .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(file_path);
+        .on_hover_text(path.display().to_string());
 
     let mut click = None;
     if link.clicked() {
-        click = Some(PdfClick::Show(file_path.to_string()));
+        click = Some(PdfClick::Show(path.to_path_buf()));
     }
     // `context_menu` shows the closure's buttons in a popup after a right click.
     link.context_menu(|ui| {
         if ui.button("Open").clicked() {
-            click = Some(PdfClick::Open(file_path.to_string()));
+            click = Some(PdfClick::Open(path.to_path_buf()));
             ui.close();
         }
         if ui.button("Show in Finder").clicked() {
-            click = Some(PdfClick::Reveal(file_path.to_string()));
+            click = Some(PdfClick::Reveal(path.to_path_buf()));
             ui.close();
         }
     });
@@ -886,30 +978,34 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// One row of the table. The texts are borrowed from the loaded letter (`'a`); the path
+/// is new, so the row owns it.
 struct PdfRow<'a> {
     summary: &'a str,
     letter_date: Option<&'a str>,
-    file_path: &'a str,
+    /// The PDF's full path: the archive folder joined with the path the database keeps
+    /// ("Gesundheit/Brief.pdf" becomes "data/pdfs/output/Gesundheit/Brief.pdf").
+    path: PathBuf,
     category: &'a str,
 }
 
-impl<'a> From<&'a Document> for PdfRow<'a> {
-    fn from(pdf: &'a Document) -> Self {
+impl<'a> PdfRow<'a> {
+    /// The row of a stored letter whose PDF lies in the archive folder `root`.
+    fn of_document(pdf: &'a Document, root: &Path) -> Self {
         PdfRow {
             summary: &pdf.summary,
             letter_date: pdf.letter_date.as_deref(),
-            file_path: &pdf.file_path,
+            path: root.join(&pdf.file_path),
             category: &pdf.category,
         }
     }
-}
 
-impl<'a> From<&'a SearchHit> for PdfRow<'a> {
-    fn from(hit: &'a SearchHit) -> Self {
+    /// The row of a search hit whose PDF lies in the archive folder `root`.
+    fn of_hit(hit: &'a SearchHit, root: &Path) -> Self {
         PdfRow {
             summary: &hit.summary,
             letter_date: hit.letter_date.as_deref(),
-            file_path: &hit.file_path,
+            path: root.join(&hit.file_path),
             category: &hit.category,
         }
     }

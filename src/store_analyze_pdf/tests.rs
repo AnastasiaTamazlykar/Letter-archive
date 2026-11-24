@@ -41,7 +41,8 @@ fn test_file_pdf_already_stored_fails_and_copies_nothing() {
         letter_date: "2025-11-25".to_string(),
         file_name: "Steuerbescheid".to_string(),
     };
-    crud.insert_letter(&input, &hash, "text", &answer).unwrap();
+    // Its path inside the output folder doesn't matter here; only its fingerprint does.
+    crud.insert_letter(Path::new("brief.pdf"), &hash, "text", &answer).unwrap();
 
     let error = analyze_place_pdf(&input, &output, &mut crud).unwrap_err();
 
@@ -80,7 +81,8 @@ fn test_file_pdf_copies_and_records() {
     assert!(input.exists(), "the input is copied, not moved");
     let stored = crud.find_all(10).unwrap();
     assert_eq!(stored.len(), 1);
-    assert_eq!(Path::new(&stored[0].file_path), target);
+    // The database keeps the path inside the output folder, not the full one.
+    assert_eq!(Path::new(&stored[0].file_path), target.strip_prefix(&output).unwrap());
     assert!(stored[0].text.contains("Frau Müller"));
 }
 

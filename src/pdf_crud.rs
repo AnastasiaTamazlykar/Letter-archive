@@ -23,7 +23,6 @@ use sha2::{Digest, Sha256};
 
 use crate::summarize_with_ai::LLMAnswer;
 use crate::{language, schema::documents};
-use crate::paths::OUTPUT_DIR;
 
 // The tests live in `src/pdf_crud/tests.rs`.
 #[cfg(test)]
@@ -42,6 +41,7 @@ const CREATE_DOCUMENTS: &str = "
     CREATE TABLE IF NOT EXISTS documents (
         id          INTEGER PRIMARY KEY,
         file_path   TEXT NOT NULL,
+        category    TEXT NOT NULL DEFAULT '',
         sha256      TEXT NOT NULL UNIQUE,
         text        TEXT NOT NULL,
         summary TEXT NOT NULL,
@@ -159,11 +159,9 @@ impl PdfCrud {
         date.parse::<Date>().ok().map(|d| d.to_string())
     }
 
-    /// Writes one letter's row: where the PDF is, its fingerprint, its text and what the
-    /// LLM said about it. Returns the new row's id. Only stores; reads and asks nothing.
     pub fn insert_letter(
         &mut self,
-        pdf: &Path,
+        relative: &Path,
         hash: &str,
         text: &str,
         answer: &LLMAnswer,
@@ -172,13 +170,13 @@ impl PdfCrud {
         let iso_letter_date = Self::verify_date(answer.letter_date.as_str());
         let id = diesel::insert_into(documents::table)
             .values((
-                documents::file_path.eq(pdf.to_str().ok_or("path is not UTF-8")?),
+                documents::file_path.eq(relative.to_str().ok_or("path is not UTF-8")?),
                 documents::sha256.eq(hash),
                 documents::text.eq(text),
                 documents::summary.eq(&answer.summary),
                 documents::language.eq(language::LETTERS.short),
                 documents::letter_date.eq(iso_letter_date),
-                documents::category.eq(Self::extract_category(pdf))
+                documents::category.eq(category_of(relative)),
             ))
             .returning(documents::id)
             .get_result(&mut self.db)?;
@@ -191,26 +189,18 @@ impl PdfCrud {
             .select((documents::id, documents::file_path, documents::sha256))
             .load(&mut self.db)
     }
-    /// The folder a filed PDF sits in, below the output folder: "Gesundheit/teeth" for
-    /// "data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf". "-" if the PDF lies right in the
-    /// output folder, or outside it (for example a letter stored before filing existed).
-    fn extract_category(file_path: &Path) -> String {
-        let folder = file_path
-            .strip_prefix(OUTPUT_DIR)
-            // ok() converts error to None
-            .ok()
-            // and_then executes function only on not None
-            .and_then(|relative| relative.parent())
-            .map(|folder| folder.to_string_lossy().into_owned())
-            .unwrap_or_default(); // `None` becomes ""
-        folder
-    }
-    /// Changes where a letter's PDF is, for one letter.
-    pub fn update_file_path_category(&mut self, id: i64, path: &Path) -> Result<(), Box<dyn Error>> {
-        let category = Self::extract_category(path);
+    /// Changes where a letter's PDF is, for one letter, and so its category: the subfolder
+    /// it is in now. `path` must lie inside `output_dir`, the archive folder.
+    pub fn update_file_path_category(
+        &mut self,
+        id: i64,
+        relative_path: &Path,
+        output_dir: &Path,
+    ) -> Result<(), Box<dyn Error>> {
         diesel::update(documents::table.find(id)) // UPDATE documents WHERE id = ?
-            .set((documents::file_path.eq(path.to_str().ok_or("path is not UTF-8")?),
-                 documents::category.eq(category)))
+            .set((
+                documents::category.eq(category_of(relative_path)),
+            ))
             .execute(&mut self.db)?;
         Ok(())
     }
@@ -262,6 +252,7 @@ impl PdfCrud {
         sql_query(
             "SELECT documents.id AS id, documents.summary AS  summary,
             documents.letter_date AS letter_date, documents.file_path AS file_path,
+                    documents.category AS category,
                     snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
              FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
              WHERE documents_fts MATCH ?
@@ -345,4 +336,16 @@ pub fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
     let digest = Sha256::digest(&bytes);
     // Each byte becomes two hex digits, e.g. 10 -> "0a".
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+
+
+/// The category of a letter: the folder part of its path inside the archive folder,
+/// "Gesundheit/teeth" for "Gesundheit/teeth/Zahnarzt.pdf"; "" for a PDF lying right in
+/// the archive folder.
+fn category_of(relative: &Path) -> String {
+    relative
+        .parent()
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .unwrap_or_default() // `None` becomes ""
 }

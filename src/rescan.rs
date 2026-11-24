@@ -46,15 +46,19 @@ impl Rescan {
 /// wrong folder can never empty the database.
 pub fn rescan(crud: &mut PdfCrud, output_dir: &Path) -> Result<Rescan, Box<dyn Error>> {
     if !output_dir.is_dir() {
-        return Err(format!("{} not found, nothing changed", output_dir.display()).into());
+        return Err(format!("{} not found", output_dir.display()).into());
     }
     // `partition` splits the rows in two lists: PDFs still in place, and missing ones.
+    // A row keeps the path inside the archive folder, so the folder goes in front.
     let (in_place, missing): (Vec<StoredFile>, Vec<StoredFile>) = crud
         .stored_files()?
         .into_iter()
-        .partition(|file| Path::new(&file.file_path).exists());
+        .partition(|file| output_dir.join(&file.file_path).exists());
 
     let mut report = Rescan::default();
+    if in_place.is_empty() {
+        return Err(format!("Not a single file found in {}", output_dir.display()).into());
+    }
     if missing.is_empty() {
         return Ok(report); // the usual case: nothing is hashed at all
     }
@@ -62,7 +66,7 @@ pub fn rescan(crud: &mut PdfCrud, output_dir: &Path) -> Result<Rescan, Box<dyn E
     for file in missing {
         match by_hash.get(&file.sha256) {
             Some(new_path) => {
-                crud.update_file_path_category(file.id, new_path)?;
+                crud.update_file_path_category(file.id, new_path, output_dir)?;
                 report.moved += 1;
             }
             None => {
@@ -83,9 +87,10 @@ fn hash_unknown_pdfs(
     in_place: &[StoredFile],
 ) -> Result<HashMap<String, PathBuf>, Box<dyn Error>> {
     // A `HashSet` answers "is this path in it?" at once, however many paths it holds.
-    let known: HashSet<&Path> = in_place
+    // Full paths, the archive folder in front, to compare with what `pdf_files` finds.
+    let known: HashSet<PathBuf> = in_place
         .iter()
-        .map(|file| Path::new(&file.file_path))
+        .map(|file| output_dir.join(&file.file_path))
         .collect();
     let mut by_hash = HashMap::new();
     for pdf in pdf_files(output_dir)? {

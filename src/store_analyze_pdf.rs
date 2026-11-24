@@ -45,8 +45,12 @@ pub fn analyze_place_pdf(
     fs::create_dir_all(&dir)?;
     let name = pdf_name::safe_file_name(&answer.file_name);
     let target = pdf_name::free_pdf_path(&dir, &name);
+    // The database keeps only the path inside the archive folder ("Finanzamt/Brief.pdf"),
+    // so the archive folder may move. `target` starts with `output_dir`, so this can't
+    // fail; it comes before the copy anyway, so a failure would leave no file behind.
+    let relative = target.strip_prefix(output_dir)?;
     fs::copy(input, &target)?;
-    if let Err(error) = crud.insert_letter(&target, &hash, &text, &answer) {
+    if let Err(error) = crud.insert_letter(relative, &hash, &text, &answer) {
         // `let _ =`: if removing fails too, the first error is the one worth showing.
         let _ = fs::remove_file(&target);
         return Err(error);

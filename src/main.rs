@@ -7,6 +7,7 @@ mod convert;
 mod store_analyze_pdf;
 mod folders;
 mod language;
+mod move_archive;
 mod open_file;
 mod paths;
 mod pdf_name;
@@ -16,6 +17,7 @@ mod pdf_crud;
 mod pipeline;
 mod rescan;
 mod schema;
+mod settings;
 
 mod summarize_with_ai;
 // Helpers for the tests of several modules; `cfg(test)`: left out of the app itself.

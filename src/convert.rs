@@ -19,7 +19,7 @@ use eframe::egui;
 use crate::{
     store_analyze_pdf::analyze_place_pdf,
     language,
-    paths::{DB_FILE, INPUT_DIR, OUTPUT_DIR},
+    paths::{DB_FILE, INPUT_DIR},
     pdf_crud::PdfCrud,
     pdf_name, pipeline,
 };
@@ -38,18 +38,19 @@ pub struct Conversion {
 
 impl Conversion {
     /// Starts making one PDF from `images`, one page per image, in the order given,
-    /// and filing it. `ctx` lets the thread wake the window up when it is done.
-    pub fn start_images(images: Vec<PathBuf>, ctx: egui::Context) -> Self {
+    /// and filing it in `output_dir`. `ctx` lets the thread wake the window up when done.
+    pub fn start_images(images: Vec<PathBuf>, output_dir: PathBuf, ctx: egui::Context) -> Self {
         let progress = format!("Creating and analyzing a PDF of {} image(s)…", images.len());
-        // `move` hands `images` over to the closure, which then owns it.
-        Self::run(progress, ctx, move || create_and_file(&images))
+        // `move` hands `images` and `output_dir` over to the closure, which then owns them.
+        Self::run(progress, ctx, move || create_and_file(&images, &output_dir))
     }
 
-    /// Starts filing a PDF the user picked. The picked file itself stays where it is.
-    pub fn start_pdf(pdf: PathBuf, ctx: egui::Context) -> Self {
+    /// Starts filing a PDF the user picked in `output_dir`. The picked file itself stays
+    /// where it is.
+    pub fn start_pdf(pdf: PathBuf, output_dir: PathBuf, ctx: egui::Context) -> Self {
         let progress = format!("Analyzing {}…", pdf.display());
         Self::run(progress, ctx, move || {
-            analyze_place_pdf(&pdf, Path::new(OUTPUT_DIR), &mut open_archive()?)
+            analyze_place_pdf(&pdf, &output_dir, &mut open_archive()?)
         })
     }
 
@@ -116,12 +117,12 @@ impl Conversion {
     }
 }
 
-/// Runs on the background thread: makes the PDF in the input folder, then files it.
-/// The input PDF is kept, even if filing fails.
-fn create_and_file(images: &[PathBuf]) -> Result<PathBuf, Box<dyn Error>> {
+/// Runs on the background thread: makes the PDF in the input folder, then files it in
+/// `output_dir`. The input PDF is kept, even if filing fails.
+fn create_and_file(images: &[PathBuf], output_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let input = new_input_path()?;
     pipeline::images_to_pdf(images, &input, language::LETTERS.code)?;
-    analyze_place_pdf(&input, Path::new(OUTPUT_DIR), &mut open_archive()?)
+    analyze_place_pdf(&input, output_dir, &mut open_archive()?)
 }
 
 /// The thread opens its own database connection: the window's one can't be shared
@@ -163,7 +164,9 @@ mod tests {
     #[test]
     fn test_start_reports_a_failure_from_the_thread() {
         let missing = PathBuf::from("/no/such/photo.HEIC");
-        let mut conversion = Conversion::start_images(vec![missing], egui::Context::default());
+        let output = PathBuf::from(crate::paths::OUTPUT_DIR);
+        let mut conversion =
+            Conversion::start_images(vec![missing], output, egui::Context::default());
 
         // Ask now and then, the way the window does once per frame; give up after 5 s.
         for _ in 0..500 {
