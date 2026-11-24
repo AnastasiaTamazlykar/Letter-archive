@@ -24,7 +24,7 @@ mod tests;
 /// without it, two letters the LLM gives the same name would both pick "Brief.pdf", and the
 /// second copy would overwrite the first. A `Mutex` lets one thread in at a time.
 /// `()`: it guards no data, only the order of the steps.
-static FILING: Mutex<()> = Mutex::new(());
+pub(crate) static FILING: Mutex<()> = Mutex::new(());
 
 /// Files the PDF at `input`: copies it into the folder of `output_dir` the LLM chose
 /// (or `output_dir` itself if none fits) and adds it to the database.

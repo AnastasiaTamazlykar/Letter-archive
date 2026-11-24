@@ -6,6 +6,7 @@ use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
 use crate::paths::{DB_FILE, SETTINGS_FILE};
 use crate::move_archive::move_archive;
+use crate::path_change::change_category;
 use crate::rename_pdf::rename_pdf;
 use crate::settings::Settings;
 use crate::{convert::Conversion, pipeline, rescan};
@@ -108,7 +109,9 @@ enum PdfClick {
     Reveal(PathBuf),
     /// "Rename" in the right-click menu: the file name turns into a text box.
     Rename(PathBuf),
-    /// Enter in that text box: rename the file.
+    /// "Rename" in the right-click menu of the category: the category turns into a text box.
+    RenameCategory(PathBuf),
+    /// Enter in that text box: rename the file, or move it to the typed category.
     RenameSubmit,
     /// Esc in that text box, or a click somewhere else: keep the old name.
     RenameCancel,
@@ -118,8 +121,11 @@ enum PdfClick {
 struct Renaming {
     /// The PDF's full path; tells the table which row to draw the box in.
     path: PathBuf,
-    /// The new name without ".pdf"; starts as the current one.
+    /// The new name without ".pdf", or the new category if `category` is true; starts as
+    /// the current one.
     text: String,
+    /// True when the category is edited (the file moves to that folder), false for the name.
+    category: bool,
     /// Why the last try failed, shown under the box.
     error: String,
     /// False until the box has been given the keyboard focus (once at the start, and again
@@ -133,7 +139,24 @@ impl Renaming {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Renaming { path, text, error: String::new(), focused: false }
+        Renaming { path, text, category: false, error: String::new(), focused: false }
+    }
+
+    /// Editing the category of the PDF at `path`; the box starts with its current category,
+    /// the folder part of its path inside `output_dir` ("" for a PDF right in it).
+    fn of_category(path: PathBuf, output_dir: &Path) -> Self {
+        let text = path
+            .strip_prefix(output_dir)
+            .ok()
+            .and_then(|relative| relative.parent())
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Renaming { path, text, category: true, error: String::new(), focused: false }
+    }
+
+    /// True if this edit is for the name (or category) cell of the row of `path`.
+    fn is_for(&self, path: &Path, category: bool) -> bool {
+        self.path == path && self.category == category
     }
 }
 
@@ -445,6 +468,10 @@ impl App {
                 self.renaming = Some(Renaming::new(path));
                 return;
             }
+            PdfClick::RenameCategory(path) => {
+                self.renaming = Some(Renaming::of_category(path, &self.settings.output_dir));
+                return;
+            }
             PdfClick::RenameSubmit => {
                 self.finish_rename(ctx);
                 return;
@@ -498,7 +525,9 @@ impl App {
         let old = renaming.path.clone();
         // `self.crud`, `self.settings` and `self.renaming` are different fields, so Rust
         // lets us borrow all three at once.
-        match rename_pdf(&mut self.crud, &self.settings.output_dir, &old, &renaming.text) {
+        // Both functions take the same arguments: pick the one for what is being edited.
+        let change = if renaming.category { change_category } else { rename_pdf };
+        match change(&mut self.crud, &self.settings.output_dir, &old, &renaming.text) {
             Err(error) => {
                 renaming.error = error.to_string();
                 renaming.focused = false; // give the box the focus again
@@ -974,13 +1003,21 @@ fn pdf_row(
     row.col(|ui| {
         // The row being renamed shows a text box instead of the file name link.
         // `as_mut` lends the box's data out for changing; `filter` keeps it only for this row.
-        click = match renaming.as_mut().filter(|renaming| renaming.path == pdf.path) {
+        click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, false)) {
             Some(renaming) => rename_cell(ui, renaming),
             None => file_link(ui, &pdf.path),
         };
     });
     row.col(|ui| {
-        ui.label(pdf.category);
+        // The same for the category: a box in the row being edited, else the category itself.
+        let cell_click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, true)) {
+            Some(renaming) => rename_cell(ui, renaming),
+            None => category_label(ui, pdf),
+        };
+        // Only a real click is kept, so this cell cannot erase the file name's click.
+        if cell_click.is_some() {
+            click = cell_click;
+        }
     });
     row.col(|ui| {
         ui.label(pdf.letter_date.unwrap_or("-"));
@@ -1032,18 +1069,38 @@ fn file_link(ui: &mut egui::Ui, path: &Path) -> Option<PdfClick> {
     click
 }
 
-/// The text box that replaces the file name while it is renamed, with ".pdf" after it and
-/// the reason under it if the last try failed. Enter renames, Esc or a click elsewhere cancels.
+/// The category as text; a right click offers to rename it, which moves the PDF to the
+/// folder typed in.
+fn category_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
+    // `sense(click)` lets the label notice the right click that opens its menu.
+    let label = ui.add(egui::Label::new(pdf.category).sense(egui::Sense::click()));
+    let mut click = None;
+    label.context_menu(|ui| {
+        if ui.button("Rename").clicked() {
+            click = Some(PdfClick::RenameCategory(pdf.path.clone()));
+            ui.close();
+        }
+    });
+    click
+}
+
 fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
+    // The text box that replaces the file name or the category while it is edited (".pdf"
+    // follows a file name), with the reason under it if the last try failed. Enter saves,
+    // Esc or a click elsewhere cancels.
     let mut click = None;
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - RENAME_SUFFIX_WIDTH).max(0.0);
+        // ".pdf" only follows a file name, not a category.
+        let suffix_width = if renaming.category { 0.0 } else { RENAME_SUFFIX_WIDTH };
+        let width = (ui.available_width() - suffix_width).max(0.0);
         let name = ui.add(egui::TextEdit::singleline(&mut renaming.text).desired_width(width));
         if !renaming.focused {
             name.request_focus(); // so the user can type at once
             renaming.focused = true;
         }
-        ui.label(".pdf");
+        if !renaming.category {
+            ui.label(".pdf");
+        }
         // Enter, Esc and a click elsewhere all take the focus away from the box;
         // the key tells them apart.
         if name.lost_focus() {
