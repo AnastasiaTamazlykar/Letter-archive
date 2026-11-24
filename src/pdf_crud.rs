@@ -190,15 +190,17 @@ impl PdfCrud {
             .load(&mut self.db)
     }
     /// Changes where a letter's PDF is, for one letter, and so its category: the subfolder
-    /// it is in now. `path` must lie inside `output_dir`, the archive folder.
+    /// it is in now. `relative_path` is the path inside the archive folder, like
+    /// "Gesundheit/teeth/Zahnarzt.pdf", not the full one: the database only keeps that part.
     pub fn update_file_path_category(
         &mut self,
         id: i64,
         relative_path: &Path,
-        output_dir: &Path,
     ) -> Result<(), Box<dyn Error>> {
+        let path = relative_path.to_str().ok_or("path is not UTF-8")?;
         diesel::update(documents::table.find(id)) // UPDATE documents WHERE id = ?
             .set((
+                documents::file_path.eq(path),
                 documents::category.eq(category_of(relative_path)),
             ))
             .execute(&mut self.db)?;
@@ -218,6 +220,16 @@ impl PdfCrud {
             .select(documents::id) // SELECT id
             .first(&mut self.db) // LIMIT 1, and run it
             // `first` fails when there is no row; `optional` turns that into `None`.
+            .optional()
+    }
+
+    /// The id of the letter whose PDF is at this path inside the archive folder
+    /// ("Finanzamt/Brief.pdf"), if there is one.
+    pub fn find_by_file_path(&mut self, relative_path: &str) -> QueryResult<Option<i64>> {
+        documents::table
+            .filter(documents::file_path.eq(relative_path))
+            .select(documents::id)
+            .first(&mut self.db)
             .optional()
     }
 

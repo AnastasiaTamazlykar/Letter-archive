@@ -63,6 +63,39 @@ fn test_rescan_finds_a_moved_file() {
 }
 
 #[test]
+fn test_rescan_category_is_the_folder_inside_the_output_folder_not_the_full_path() {
+    let (mut crud, output) = setup("rescan_nested_category");
+    store_one_in_place(&mut crud, &output);
+    let old = output.join("Zahnarzt.pdf");
+    let id = store(&mut crud, &output, &old, "Zahnarzt Berlin");
+    fs::create_dir_all(output.join("Gesundheit/teeth")).unwrap();
+    fs::rename(&old, output.join("Gesundheit/teeth/Zahnarzt.pdf")).unwrap();
+
+    rescan(&mut crud, &output).unwrap();
+
+    let letter = crud.document(id).unwrap().unwrap();
+    assert_eq!(letter.file_path, "Gesundheit/teeth/Zahnarzt.pdf");
+    assert_eq!(letter.category, "Gesundheit/teeth"); // not "<output folder>/Gesundheit/teeth"
+}
+
+#[test]
+fn test_rescan_file_moved_back_to_the_output_folder_has_no_category() {
+    let (mut crud, output) = setup("rescan_back_to_root");
+    store_one_in_place(&mut crud, &output);
+    fs::create_dir_all(output.join("Finanzamt")).unwrap();
+    let old = output.join("Finanzamt/Brief.pdf");
+    let id = store(&mut crud, &output, &old, "Finanzamt Berlin");
+    assert_eq!(crud.document(id).unwrap().unwrap().category, "Finanzamt");
+    fs::rename(&old, output.join("Brief.pdf")).unwrap();
+
+    rescan(&mut crud, &output).unwrap();
+
+    let letter = crud.document(id).unwrap().unwrap();
+    assert_eq!(letter.file_path, "Brief.pdf");
+    assert_eq!(letter.category, "");
+}
+
+#[test]
 fn test_rescan_finds_a_renamed_file() {
     let (mut crud, output) = setup("rescan_renamed");
     store_one_in_place(&mut crud, &output);

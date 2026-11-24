@@ -143,3 +143,36 @@ fn test_path() {
     assert!(Path::new("data/pdfs/input/a.pdf").strip_prefix(output).is_err());
 }
 
+/// Needs the local LLM server running. Two near-identical letters are filed at the same
+/// time on two threads, so the LLM likely gives both the same name. Thanks to the lock,
+/// each still gets its own file; without it, one copy could overwrite the other.
+#[test]
+fn test_two_letters_filed_at_once_do_not_overwrite_each_other() {
+    let folder = test_folder("file_pdf_parallel");
+    let output = folder.join("output");
+    let db = folder.join("archive.db");
+    drop(new_crud(&folder)); // creates the database file and its tables
+    let first = folder.join("first.pdf");
+    let second = folder.join("second.pdf");
+    // The last line differs, so the two files are not the same letter (see the hash check).
+    write_pdf(&first, &[LETTER[0], LETTER[1], LETTER[2], "Aktenzeichen 1"]);
+    write_pdf(&second, &[LETTER[0], LETTER[1], LETTER[2], "Aktenzeichen 2"]);
+
+    // Each thread opens its own connection, like the app's jobs do. A plain function, not a
+    // closure: a closure made inside `scope` would end before the threads it is lent to.
+    fn file(input: &Path, output: &Path, db: &Path) -> PathBuf {
+        let mut crud = PdfCrud::open(db).unwrap();
+        analyze_place_pdf(input, output, &mut crud).unwrap()
+    }
+    // `scope` lets the threads borrow `output` and `db`: it waits for them all to end.
+    let (one, two) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| file(&first, &output, &db));
+        let two = scope.spawn(|| file(&second, &output, &db));
+        (one.join().unwrap(), two.join().unwrap())
+    });
+
+    assert_ne!(one, two, "both letters went to the same file");
+    assert!(one.exists() && two.exists());
+    assert_eq!(PdfCrud::open(&db).unwrap().find_all(10).unwrap().len(), 2);
+}
+

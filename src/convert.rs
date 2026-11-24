@@ -1,5 +1,6 @@
 //! Files a letter on a background thread, so the window keeps responding while Vision
-//! reads the letters and the LLM sums them up (several seconds). Two ways in:
+//! reads the letters and the LLM sums them up (several seconds). Every job gets its own
+//! thread, so any number of them can run at the same time. Two ways in:
 //! - images: they first become one PDF in the input folder;
 //! - a PDF the user picked.
 //!
@@ -10,7 +11,10 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
     thread,
 };
 
@@ -26,6 +30,8 @@ use crate::{
 
 /// A conversion running in the background; the window asks it for news every frame.
 pub struct Conversion {
+    /// What the job is about, to tell the jobs in the queue apart: "3 image(s)" or a file name.
+    label: String,
     /// The receiving end of a channel: the thread sends its one result into it when done:
     /// where the filed PDF is, or what went wrong. The error is text, because
     /// `Box<dyn Error>` may not cross threads.
@@ -40,16 +46,20 @@ impl Conversion {
     /// Starts making one PDF from `images`, one page per image, in the order given,
     /// and filing it in `output_dir`. `ctx` lets the thread wake the window up when done.
     pub fn start_images(images: Vec<PathBuf>, output_dir: PathBuf, ctx: egui::Context) -> Self {
-        let progress = format!("Creating and analyzing a PDF of {} image(s)…", images.len());
+        let label = format!("{} image(s)", images.len());
+        let progress = format!("Creating and analyzing a PDF of {label}…");
         // `move` hands `images` and `output_dir` over to the closure, which then owns them.
-        Self::run(progress, ctx, move || create_and_file(&images, &output_dir))
+        Self::run(label, progress, ctx, move || create_and_file(&images, &output_dir))
     }
 
     /// Starts filing a PDF the user picked in `output_dir`. The picked file itself stays
     /// where it is.
     pub fn start_pdf(pdf: PathBuf, output_dir: PathBuf, ctx: egui::Context) -> Self {
-        let progress = format!("Analyzing {}…", pdf.display());
-        Self::run(progress, ctx, move || {
+        let label = pdf
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let progress = format!("Analyzing {label}…");
+        Self::run(label, progress, ctx, move || {
             analyze_place_pdf(&pdf, &output_dir, &mut open_archive()?)
         })
     }
@@ -59,6 +69,7 @@ impl Conversion {
     /// may move to another thread (`Send`), and borrows nothing that could end before
     /// the thread does (`'static`). The compiler checks all three.
     fn run(
+        label: String,
         progress: String,
         ctx: egui::Context,
         job: impl FnOnce() -> Result<PathBuf, Box<dyn Error>> + Send + 'static,
@@ -71,6 +82,7 @@ impl Conversion {
             ctx.request_repaint();
         });
         Conversion {
+            label,
             outcome,
             progress,
             result: None,
@@ -89,6 +101,25 @@ impl Conversion {
             Err(TryRecvError::Disconnected) => {
                 self.result = Some(Err("the conversion stopped unexpectedly".into()));
             }
+        }
+    }
+
+    /// For example "3 image(s)" or "scan.pdf".
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// A job that is already done, with no thread behind it: lets the tests of the window
+    /// show a success without the LLM. `cfg(test)`: left out of the app itself.
+    #[cfg(test)]
+    pub fn already_done(label: &str, result: Result<PathBuf, String>) -> Self {
+        let (sender, outcome) = mpsc::channel();
+        sender.send(result).unwrap(); // waits in the channel until `receive` picks it up
+        Conversion {
+            label: label.to_string(),
+            outcome,
+            progress: String::new(),
+            result: None,
         }
     }
 
@@ -131,13 +162,20 @@ fn open_archive() -> Result<PdfCrud, Box<dyn Error>> {
     PdfCrud::open(Path::new(DB_FILE))
 }
 
-/// A free path in the input folder named after the time, e.g. "2026-11-18_14-30-05.pdf".
-/// Creates the folder if it is missing.
+/// Counts the jobs started since the app began; see `new_input_path`.
+/// An atomic number can be changed from several threads at once, without a lock.
+static JOB_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+/// A free path in the input folder named after the time and the job number,
+/// e.g. "2026-11-18_14-30-05_1.pdf". Creates the folder if it is missing.
+/// The number keeps jobs started in the same second apart: the file only appears when
+/// its PDF is done, so `free_pdf_path` alone could give two jobs the same name.
 fn new_input_path() -> Result<PathBuf, Box<dyn Error>> {
     let dir = Path::new(INPUT_DIR);
     fs::create_dir_all(dir)?;
     let now = jiff::ZonedDateTime::now().strftime("%Y-%m-%d_%H-%M-%S").to_string();
-    Ok(pdf_name::free_pdf_path(dir, &now))
+    let number = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(pdf_name::free_pdf_path(dir, &format!("{now}_{number}")))
 }
 
 // Small file, so the tests stay here. They show how the thread and the window talk:
@@ -153,6 +191,7 @@ mod tests {
     /// sending into (or dropping) the other end of the channel.
     fn by_hand(outcome: Receiver<Result<PathBuf, String>>) -> Conversion {
         Conversion {
+            label: String::new(),
             outcome,
             progress: String::new(),
             result: None,
@@ -201,6 +240,27 @@ mod tests {
 
     /// A thread that crashes drops its end of the channel without sending anything.
     /// The window notices that the channel is closed and reports it.
+    #[test]
+    fn test_input_paths_differ_within_the_same_second() {
+        // Jobs started in the same second must not get the same input file name.
+        let paths: Vec<PathBuf> = (0..20).map(|_| new_input_path().unwrap()).collect();
+
+        for (index, path) in paths.iter().enumerate() {
+            assert!(!paths[index + 1..].contains(path), "twice: {}", path.display());
+        }
+    }
+
+    #[test]
+    fn test_label_names_the_job() {
+        // The label tells the jobs in the queue apart: how many images, or the file name.
+        let photos = vec![PathBuf::from("/no/such/a.HEIC"), PathBuf::from("/no/such/b.HEIC")];
+        let output = PathBuf::from(crate::paths::OUTPUT_DIR);
+
+        let conversion = Conversion::start_images(photos, output, egui::Context::default());
+
+        assert_eq!(conversion.label(), "2 image(s)");
+    }
+
     #[test]
     fn test_a_thread_that_dies_is_reported() {
         let (sender, outcome) = mpsc::channel();

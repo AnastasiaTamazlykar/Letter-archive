@@ -66,7 +66,12 @@ pub fn rescan(crud: &mut PdfCrud, output_dir: &Path) -> Result<Rescan, Box<dyn E
     for file in missing {
         match by_hash.get(&file.sha256) {
             Some(new_path) => {
-                crud.update_file_path_category(file.id, new_path, output_dir)?;
+                // `new_path` is a full path, "<output_dir>/Finanzamt/Brief.pdf"; the database
+                // keeps only "Finanzamt/Brief.pdf". Its category comes from that same path,
+                // so with the full path it would be the whole "<output_dir>/Finanzamt".
+                // `?` turns a `StripPrefixError` into the `Box<dyn Error>` we return.
+                let relative = new_path.strip_prefix(output_dir)?;
+                crud.update_file_path_category(file.id, relative)?;
                 report.moved += 1;
             }
             None => {

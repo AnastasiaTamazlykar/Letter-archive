@@ -145,6 +145,22 @@ fn test_stored_files_returns_every_row() {
 }
 
 #[test]
+fn test_find_by_file_path_finds_only_that_letter() {
+    let folder = test_folder("find_by_path");
+    let first = folder.join("first.pdf");
+    write_pdf(&first, &LETTER);
+    let second = folder.join("second.pdf");
+    write_pdf(&second, &["Ein anderer Brief"]);
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let first_id = store(&mut archive, &first);
+    let second_id = store(&mut archive, &second);
+
+    assert_eq!(archive.find_by_file_path("first.pdf").unwrap(), Some(first_id));
+    assert_eq!(archive.find_by_file_path("second.pdf").unwrap(), Some(second_id));
+    assert_eq!(archive.find_by_file_path("third.pdf").unwrap(), None);
+}
+
+#[test]
 fn test_update_file_path_changes_only_that_row() {
     let folder = test_folder("update_path");
     let moved = folder.join("moved.pdf");
@@ -156,7 +172,7 @@ fn test_update_file_path_changes_only_that_row() {
     let other_id = store(&mut archive, &other);
 
     let new_path = Path::new("Finanzamt/moved.pdf"); // inside the output folder
-    archive.update_file_path_category(moved_id, new_path, &folder).unwrap();
+    archive.update_file_path_category(moved_id, new_path).unwrap();
 
     let moved_row = archive.document(moved_id).unwrap().unwrap();
     assert_eq!(moved_row.file_path, "Finanzamt/moved.pdf");

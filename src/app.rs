@@ -6,6 +6,7 @@ use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::pdf_pages::render_pages;
 use crate::paths::{DB_FILE, SETTINGS_FILE};
 use crate::move_archive::move_archive;
+use crate::rename_pdf::rename_pdf;
 use crate::settings::Settings;
 use crate::{convert::Conversion, pipeline, rescan};
 use eframe::egui;
@@ -16,6 +17,13 @@ use std::path::{Path, PathBuf};
 // The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
 mod sort_filter;
 use sort_filter::{category_menu, date_order_menu};
+// The list of running and finished filing jobs lives in `src/app/job_queue.rs`.
+mod job_queue;
+use job_queue::job_queue;
+
+// The tests live in `src/app/tests.rs`.
+#[cfg(test)]
+mod tests;
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
@@ -45,6 +53,11 @@ const PDF_VIEW_SHARE_MAX: f32 = 0.8;
 const DIVIDER_WIDTH: f32 = 8.0;
 /// Width of the search box, in points: wide enough to show its whole hint text.
 const SEARCH_WIDTH: f32 = 400.0;
+/// Height of the band above the thumbnails in the Images tab, in points: the drop area and
+/// the Create button next to the job list. Fixed, so the thumbnails below never move.
+const IMAGES_TOP_HEIGHT: f32 = 140.0;
+/// Room left for ".pdf" after the rename box, in points.
+const RENAME_SUFFIX_WIDTH: f32 = 36.0;
 /// Empty space above and below the search box, in points.
 const SEARCH_GAP: f32 = 8.0;
 
@@ -93,6 +106,35 @@ enum PdfClick {
     Open(PathBuf),
     /// "Show in Finder" in the right-click menu.
     Reveal(PathBuf),
+    /// "Rename" in the right-click menu: the file name turns into a text box.
+    Rename(PathBuf),
+    /// Enter in that text box: rename the file.
+    RenameSubmit,
+    /// Esc in that text box, or a click somewhere else: keep the old name.
+    RenameCancel,
+}
+
+/// The rename in progress: the file name in the table is a text box while this exists.
+struct Renaming {
+    /// The PDF's full path; tells the table which row to draw the box in.
+    path: PathBuf,
+    /// The new name without ".pdf"; starts as the current one.
+    text: String,
+    /// Why the last try failed, shown under the box.
+    error: String,
+    /// False until the box has been given the keyboard focus (once at the start, and again
+    /// after an error, so the user can keep typing).
+    focused: bool,
+}
+
+impl Renaming {
+    fn new(path: PathBuf) -> Self {
+        let text = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Renaming { path, text, error: String::new(), focused: false }
+    }
 }
 
 /// The pages of the window, picked with the buttons at the top.
@@ -120,10 +162,12 @@ pub struct App {
     pdf_view: Option<PdfView>,
     /// The PDF area's share of the Archive tab's width; changed by dragging the divider.
     pdf_view_share: f32,
-    /// The conversion running in the background, if any.
-    conversion: Option<Conversion>,
-    /// What the last conversion did, shown next to the buttons that start one.
-    status: String,
+    /// The file name being renamed in the table, if any.
+    renaming: Option<Renaming>,
+    /// The filing jobs, running in the background at the same time or already done, oldest
+    /// first. A job that worked leaves the list at once; a failed one stays (to show its
+    /// error) until the user clears it.
+    conversions: Vec<Conversion>,
     /// What the last rescan did; shown in the Archive tab only.
     rescan_status: String,
     search: String,
@@ -145,7 +189,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let preview_size = ui.available_size() * PREVIEW_SHARE; // before the panel fills it
         self.take_dropped_files(ui.ctx());
-        self.check_conversion();
+        self.check_conversions();
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -185,8 +229,8 @@ impl App {
             preview: None,
             pdf_view: None,
             pdf_view_share: PDF_VIEW_SHARE,
-            conversion: None,
-            status: "".to_string(),
+            renaming: None,
+            conversions: vec![],
             rescan_status: "".to_string(),
             search: "".to_string(),
             date_order: DateOrder::default(),
@@ -269,29 +313,31 @@ impl App {
     fn archive_tab(&mut self, ui: &mut egui::Ui) {
         // `display()`: a path as text to show; it may not be valid UTF-8, so no plain `{}`.
         let output_dir = self.settings.output_dir.display().to_string();
+        // The Analyze button has a row of its own. Jobs run side by side, so it is always available.
+        if ui
+            .button("Process new PDF file…")
+            .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
+            .clicked()
+        {
+            self.pick_pdf(ui.ctx());
+        }
         ui.horizontal(|ui| {
-            ui.label("Processed PDFs");
-            // One letter at a time: greyed out while a conversion runs.
-            let button = egui::Button::new("Analyze & file PDF…");
+            // Not while letters are being filed: a rescan could remove a letter just added.
             if ui
-                .add_enabled(self.conversion.is_none(), button)
-                .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
-                .clicked()
-            {
-                self.pick_pdf(ui.ctx());
-            }
-            if ui
-                .add_enabled(self.conversion.is_none(), egui::Button::new("Rescan"))
+                .add_enabled(!self.is_filing(), egui::Button::new("Rescan archive folder"))
                 .on_hover_text(format!(
                     "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
                 ))
+                .on_disabled_hover_text("Wait until the letters being filed are done")
                 .clicked()
             {
                 self.rescan();
             }
-            self.conversion_status(ui);
             ui.label(&self.rescan_status);
         });
+        // The title of the table, on a line of its own.
+        ui.label("Processed PDFs");
+        self.show_job_queue(ui);
         // The search box gets a row of its own, below the buttons, with space around it.
         ui.add_space(SEARCH_GAP);
         ui.horizontal(|ui| {
@@ -354,6 +400,7 @@ impl App {
                         &mut self.date_order,
                         &mut self.category,
                         &self.categories,
+                        &mut self.renaming,
                     );
                 });
                 strip.cell(|ui| {
@@ -394,6 +441,18 @@ impl App {
                 self.show_pdf(ctx, &path);
                 return;
             }
+            PdfClick::Rename(path) => {
+                self.renaming = Some(Renaming::new(path));
+                return;
+            }
+            PdfClick::RenameSubmit => {
+                self.finish_rename(ctx);
+                return;
+            }
+            PdfClick::RenameCancel => {
+                self.renaming = None;
+                return;
+            }
             PdfClick::Open(path) => {
                 let result = open_in_viewer(&path);
                 (path, result)
@@ -430,31 +489,87 @@ impl App {
         self.pdf_view = Some(PdfView { name, pages });
     }
 
+    /// Renames the PDF being renamed to the typed name (see `rename_pdf.rs`). On success the
+    /// table is loaded again; on failure the box stays, with the reason under it.
+    fn finish_rename(&mut self, ctx: &egui::Context) {
+        let Some(renaming) = &mut self.renaming else {
+            return;
+        };
+        let old = renaming.path.clone();
+        // `self.crud`, `self.settings` and `self.renaming` are different fields, so Rust
+        // lets us borrow all three at once.
+        match rename_pdf(&mut self.crud, &self.settings.output_dir, &old, &renaming.text) {
+            Err(error) => {
+                renaming.error = error.to_string();
+                renaming.focused = false; // give the box the focus again
+            }
+            Ok(new) => {
+                self.renaming = None;
+                self.reload_table();
+                // The renamed PDF was shown right of the table: show it under its new name.
+                if self.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
+                    self.show_pdf(ctx, &new);
+                }
+            }
+        }
+    }
+
     fn images_tab(&mut self, ui: &mut egui::Ui) {
-        drop_area(
-            ui,
-            "Drop images here (HEIC, PNG, JPEG)",
-            "Let go to add the images",
-        );
-        ui.add_space(8.0);
-        self.convert_bar(ui);
+        self.images_top(ui);
         ui.add_space(8.0);
         self.picture_grid(ui);
+    }
+
+    /// The band above the thumbnails, always `IMAGES_TOP_HEIGHT` high, so what is below it
+    /// never moves: the drop area and the Create button on the left half, the job list on
+    /// the right half. The list scrolls inside its space instead of pushing things down.
+    fn images_top(&mut self, ui: &mut egui::Ui) {
+        let size = egui::vec2(ui.available_width(), IMAGES_TOP_HEIGHT);
+        ui.allocate_ui(size, |ui| {
+            ui.set_height(IMAGES_TOP_HEIGHT); // exactly this high, whatever is inside
+            StripBuilder::new(ui)
+                .clip(true)
+                .size(Size::relative(0.5))
+                .size(Size::exact(DIVIDER_WIDTH)) // a gap between the halves
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        drop_area(
+                            ui,
+                            "Drop images here (HEIC, PNG, JPEG)",
+                            "Let go to add the images",
+                        );
+                        ui.add_space(8.0);
+                        self.convert_bar(ui);
+                    });
+                    strip.empty();
+                    strip.cell(|ui| {
+                        // `auto_shrink([false, false])`: the area keeps its size, even if empty.
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if self.conversions.is_empty() {
+                                    ui.weak("Jobs show here while they run");
+                                }
+                                self.show_job_queue(ui);
+                            });
+                    });
+                });
+        });
     }
 
     /// Asks for a PDF with the macOS Open panel, then analyzes and files it in the
     /// background; does nothing on Cancel.
     fn pick_pdf(&mut self, ctx: &egui::Context) {
         let Some(pdf) = rfd::FileDialog::new()
-            .set_title("Analyze & file PDF")
+            .set_title("Process new PDF file")
             .add_filter("PDF", &["pdf"])
             .pick_file()
         else {
             return;
         };
-        self.status.clear();
         let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
-        self.conversion = Some(Conversion::start_pdf(pdf, output_dir, ctx.clone()));
+        self.conversions.push(Conversion::start_pdf(pdf, output_dir, ctx.clone()));
     }
 
     /// Adds one file if it is an image and not in the list yet, and makes its thumbnail.
@@ -480,43 +595,46 @@ impl App {
             .collect()
     }
 
-    /// The Create button and where the PDF goes, with the progress or result next to it.
+    /// The Create button and where the PDF goes. Always usable once images are ticked:
+    /// jobs already running don't block a new one.
     fn convert_bar(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_paths();
-        let ready = !selected.is_empty() && self.conversion.is_none();
         let button = egui::Button::new("Create, analyze & file PDF");
 
         ui.horizontal(|ui| {
             let response = ui
-                .add_enabled(ready, button)
+                .add_enabled(!selected.is_empty(), button)
                 .on_disabled_hover_text("Tick one or more images first");
             if response.clicked() {
                 self.start_conversion(ui.ctx(), selected);
             }
             ui.weak(format!("→ {}", self.settings.output_dir.display()));
-            self.conversion_status(ui);
         });
     }
 
-    /// A spinner and what the running conversion does, or else what the last one did.
-    fn conversion_status(&self, ui: &mut egui::Ui) {
-        match &self.conversion {
-            Some(conversion) => {
-                ui.spinner();
-                ui.label(conversion.progress());
-            }
-            None => {
-                ui.label(&self.status);
-            }
+    /// True while at least one job has not finished.
+    fn is_filing(&self) -> bool {
+        self.conversions.iter().any(|job| !job.is_finished())
+    }
+
+    /// Draws the list of jobs; removes the finished ones if "Clear finished" was clicked.
+    fn show_job_queue(&mut self, ui: &mut egui::Ui) {
+        if job_queue(ui, &self.conversions) {
+            // `retain` keeps only the jobs for which the closure says true.
+            self.conversions.retain(|job| !job.is_finished());
         }
     }
 
     /// Makes a PDF from the images, analyzes and files it, all in the background.
+    /// The ticks are removed at once, so the next PDF can be picked right away and the
+    /// same images are not filed twice by accident.
     fn start_conversion(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
-        self.status.clear();
+        for picture in &mut self.pictures {
+            picture.selected = false;
+        }
         // `clone` gives the thread its own handle to the window; both point to the same one.
         let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
-        self.conversion = Some(Conversion::start_images(images, output_dir, ctx.clone()));
+        self.conversions.push(Conversion::start_images(images, output_dir, ctx.clone()));
     }
 
     /// The Settings tab: the output folder, with a button to choose another one.
@@ -534,10 +652,10 @@ impl App {
             {
                 self.pick_output_dir();
             }
-            // Not while a letter is being filed: it would be copied into the old place.
+            // Not while letters are being filed: they would be copied into the old place.
             let move_button = egui::Button::new("Move archive to…");
             if ui
-                .add_enabled(self.conversion.is_none(), move_button)
+                .add_enabled(!self.is_filing(), move_button)
                 .on_hover_text("Moves the folder with all its PDFs into an empty folder you choose")
                 .on_disabled_hover_text("Wait until the letter being filed is done")
                 .clicked()
@@ -592,24 +710,21 @@ impl App {
         };
     }
 
-    /// Collects news from the running conversion; when it is done, keeps its summary.
-    fn check_conversion(&mut self) {
-        let Some(conversion) = &mut self.conversion else {
-            return;
-        };
-        conversion.receive();
-        if conversion.is_finished() {
-            self.status = conversion.summary();
-            let filed = conversion.succeeded();
-            self.conversion = None;
-            // Untick all images, so the same ones aren't filed twice by accident.
-            for picture in &mut self.pictures {
-                picture.selected = false;
-            }
-            if filed {
-                self.set_pdfs(); // show the new letter in the Archive tab
-            }
+    /// Collects news from every job; reloads the table if one has just filed a letter.
+    fn check_conversions(&mut self) {
+        let mut filed = false;
+        for job in &mut self.conversions {
+            let was_finished = job.is_finished();
+            job.receive();
+            // Only a job that finished in this frame counts; old ones were handled before.
+            filed |= !was_finished && job.succeeded();
         }
+        if filed {
+            self.set_pdfs(); // show the new letters in the Archive tab
+        }
+        // A job that worked has nothing more to say: the letter is in the table. A failed
+        // one stays in the queue, with its error, until the user clears it.
+        self.conversions.retain(|job| !job.succeeded());
     }
 
     /// Shows how many images there are, then their thumbnails in rows that wrap.
@@ -803,6 +918,7 @@ fn display_pdfs(
     order: &mut DateOrder,
     category: &mut Option<String>,
     categories: &[String],
+    renaming: &mut Option<Renaming>,
 ) -> Option<PdfClick> {
     // The row closures below assign to `click`; they borrow it mutably one after another.
     let mut click = None;
@@ -840,7 +956,7 @@ fn display_pdfs(
             for pdf in rows {
                 body.row(PDF_ROW_HEIGHT, |row| {
                     // Only a real click (`Some`) is kept, so a later row cannot erase it.
-                    if let Some(row_click) = pdf_row(row, pdf) {
+                    if let Some(row_click) = pdf_row(row, pdf, renaming) {
                         click = Some(row_click);
                     }
                 });
@@ -849,10 +965,19 @@ fn display_pdfs(
     click
 }
 
-fn pdf_row(mut row: TableRow<'_, '_>, pdf: &PdfRow) -> Option<PdfClick> {
+fn pdf_row(
+    mut row: TableRow<'_, '_>,
+    pdf: &PdfRow,
+    renaming: &mut Option<Renaming>,
+) -> Option<PdfClick> {
     let mut click = None;
     row.col(|ui| {
-        click = file_link(ui, &pdf.path);
+        // The row being renamed shows a text box instead of the file name link.
+        // `as_mut` lends the box's data out for changing; `filter` keeps it only for this row.
+        click = match renaming.as_mut().filter(|renaming| renaming.path == pdf.path) {
+            Some(renaming) => rename_cell(ui, renaming),
+            None => file_link(ui, &pdf.path),
+        };
     });
     row.col(|ui| {
         ui.label(pdf.category);
@@ -899,7 +1024,39 @@ fn file_link(ui: &mut egui::Ui, path: &Path) -> Option<PdfClick> {
             click = Some(PdfClick::Reveal(path.to_path_buf()));
             ui.close();
         }
+        if ui.button("Rename").clicked() {
+            click = Some(PdfClick::Rename(path.to_path_buf()));
+            ui.close();
+        }
     });
+    click
+}
+
+/// The text box that replaces the file name while it is renamed, with ".pdf" after it and
+/// the reason under it if the last try failed. Enter renames, Esc or a click elsewhere cancels.
+fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
+    let mut click = None;
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - RENAME_SUFFIX_WIDTH).max(0.0);
+        let name = ui.add(egui::TextEdit::singleline(&mut renaming.text).desired_width(width));
+        if !renaming.focused {
+            name.request_focus(); // so the user can type at once
+            renaming.focused = true;
+        }
+        ui.label(".pdf");
+        // Enter, Esc and a click elsewhere all take the focus away from the box;
+        // the key tells them apart.
+        if name.lost_focus() {
+            click = Some(if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                PdfClick::RenameSubmit
+            } else {
+                PdfClick::RenameCancel
+            });
+        }
+    });
+    if !renaming.error.is_empty() {
+        ui.colored_label(egui::Color32::RED, &renaming.error);
+    }
     click
 }
 

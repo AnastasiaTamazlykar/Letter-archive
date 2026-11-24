@@ -6,6 +6,7 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use crate::{
@@ -18,6 +19,12 @@ use crate::{
 // The tests live in `src/file_pdf/tests.rs`.
 #[cfg(test)]
 mod tests;
+
+/// Held while a letter is copied and recorded. Letters are filed on several threads at once;
+/// without it, two letters the LLM gives the same name would both pick "Brief.pdf", and the
+/// second copy would overwrite the first. A `Mutex` lets one thread in at a time.
+/// `()`: it guards no data, only the order of the steps.
+static FILING: Mutex<()> = Mutex::new(());
 
 /// Files the PDF at `input`: copies it into the folder of `output_dir` the LLM chose
 /// (or `output_dir` itself if none fits) and adds it to the database.
@@ -42,6 +49,9 @@ pub fn analyze_place_pdf(
         Some(folder) => output_dir.join(folder),
         None => output_dir.to_path_buf(),
     };
+    // `lock` waits until no other thread is filing; the guard `_filing` unlocks the moment
+    // this function ends. A "poisoned" lock (a thread crashed holding it) is still safe to use.
+    let _filing = FILING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     fs::create_dir_all(&dir)?;
     let name = pdf_name::safe_file_name(&answer.file_name);
     let target = pdf_name::free_pdf_path(&dir, &name);
