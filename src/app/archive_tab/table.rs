@@ -30,6 +30,8 @@ pub(super) enum PdfClick {
     RenameCategory(PathBuf),
     /// "Edit" in the right-click menu of the letter date: the date turns into a text box.
     EditDate(PathBuf),
+    /// "Edit" in the right-click menu of the summary: the summary turns into a text box.
+    EditSummary(PathBuf),
     /// Enter in that text box: rename the file, or move it to the typed category.
     RenameSubmit,
     /// Esc in that text box, or a click somewhere else: keep the old name.
@@ -127,8 +129,14 @@ fn pdf_row(
         }
     });
     row.col(|ui| {
-        ui.add(egui::Label::new(pdf.summary).wrap())
-            .on_hover_text(pdf.summary);
+        // The same for the summary.
+        let cell_click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, EditKind::Summary)) {
+            Some(renaming) => rename_cell(ui, renaming),
+            None => summary_label(ui, pdf),
+        };
+        if cell_click.is_some() {
+            click = cell_click;
+        }
     });
     click
 }
@@ -195,6 +203,22 @@ fn date_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
     label.context_menu(|ui| {
         if ui.button("Edit").clicked() {
             click = Some(PdfClick::EditDate(pdf.path.clone()));
+            ui.close();
+        }
+    });
+    click
+}
+
+/// The summary, wrapped to the column's width and in full on hover; a right click offers
+/// to edit it.
+fn summary_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
+    let label = ui
+        .add(egui::Label::new(pdf.summary).wrap().sense(egui::Sense::click()))
+        .on_hover_text(pdf.summary);
+    let mut click = None;
+    label.context_menu(|ui| {
+        if ui.button("Edit").clicked() {
+            click = Some(PdfClick::EditSummary(pdf.path.clone()));
             ui.close();
         }
     });

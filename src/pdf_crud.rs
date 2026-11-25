@@ -227,6 +227,20 @@ impl PdfCrud {
         Ok(())
     }
 
+    /// Overwrites the summary of letter `id` with `summary`; spaces around it are ignored.
+    /// Any text is allowed, even an empty one: quotes or `;` stay plain text, because the
+    /// value is a bound parameter and never becomes part of the SQL.
+    pub fn update_summary(&mut self, id: i64, summary: &str) -> Result<(), Box<dyn Error>> {
+        // UPDATE documents SET summary = ? WHERE id = ?
+        let changed = diesel::update(documents::table.find(id))
+            .set(documents::summary.eq(summary.trim()))
+            .execute(&mut self.db)?;
+        if changed == 0 {
+            return Err("this letter is not in the archive".into()); // no row had this id
+        }
+        Ok(())
+    }
+
 
     pub fn delete_letter(&mut self, id: i64) -> QueryResult<()> {
         diesel::delete(documents::table.find(id)).execute(&mut self.db)?;

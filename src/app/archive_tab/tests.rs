@@ -14,9 +14,18 @@ fn test_app_with_letter(name: &str, relative: &str) -> (App, PathBuf) {
     let mut app = test_app(name);
     let output = test_folder(&format!("{name}_output"));
     app.config.output_dir = output.clone();
-    let pdf = output.join(relative);
+    add_letter(&mut app, relative, "Finanzamt Berlin");
+    app.set_pdfs();
+    (app, output)
+}
+
+/// Stores one more letter at `relative` in the app's output folder: a PDF saying `text`,
+/// with the summary "Ein Brief." and no date. Different texts give different fingerprints,
+/// so several letters can be stored.
+fn add_letter(app: &mut App, relative: &str, text: &str) {
+    let pdf = app.config.output_dir.join(relative);
     std::fs::create_dir_all(pdf.parent().unwrap()).unwrap();
-    crate::test_support::write_pdf(&pdf, &["Finanzamt Berlin"]);
+    crate::test_support::write_pdf(&pdf, &[text]);
     let answer = crate::summarize_with_ai::LLMAnswer {
         folder: None,
         summary: "Ein Brief.".to_string(),
@@ -25,10 +34,8 @@ fn test_app_with_letter(name: &str, relative: &str) -> (App, PathBuf) {
     };
     let hash = crate::pdf_crud::file_sha256(&pdf).unwrap();
     app.crud
-        .insert_letter(Path::new(relative), &hash, "Finanzamt Berlin", &answer)
+        .insert_letter(Path::new(relative), &hash, text, &answer)
         .unwrap();
-    app.set_pdfs();
-    (app, output)
 }
 
 #[test]
@@ -265,4 +272,115 @@ fn test_esc_in_the_date_box_changes_nothing() {
 
     assert!(app.archive.renaming.is_none());
     assert_eq!(app.archive.pdfs[0].letter_date, None);
+}
+
+// ---- Editing the summary in the table ----
+
+/// The id of the letter stored at `relative`.
+fn id_of(app: &mut App, relative: &str) -> i64 {
+    app.crud.find_by_file_path(relative).unwrap().unwrap()
+}
+
+/// The summary stored for the letter at `relative`.
+fn summary_of(app: &mut App, relative: &str) -> String {
+    let id = id_of(app, relative);
+    app.crud.document(id).unwrap().unwrap().summary
+}
+
+#[test]
+fn test_update_summary_overwrites_the_stored_summary() {
+    let (mut app, _) = test_app_with_letter("app_summary_overwrite", "Brief.pdf");
+    let id = id_of(&mut app, "Brief.pdf");
+
+    app.crud.update_summary(id, "Mahnung vom Finanzamt, Frist 1.12.").unwrap();
+
+    assert_eq!(summary_of(&mut app, "Brief.pdf"), "Mahnung vom Finanzamt, Frist 1.12.");
+}
+
+#[test]
+fn test_update_summary_ignores_spaces_around_it() {
+    let (mut app, _) = test_app_with_letter("app_summary_trim", "Brief.pdf");
+    let id = id_of(&mut app, "Brief.pdf");
+
+    app.crud.update_summary(id, "  Neue Zusammenfassung ").unwrap();
+
+    assert_eq!(summary_of(&mut app, "Brief.pdf"), "Neue Zusammenfassung");
+}
+
+#[test]
+fn test_update_summary_changes_only_that_row() {
+    let (mut app, _) = test_app_with_letter("app_summary_one_row", "Brief.pdf");
+    add_letter(&mut app, "Andere.pdf", "Ein anderer Brief");
+    let id = id_of(&mut app, "Brief.pdf");
+
+    app.crud.update_summary(id, "Neu").unwrap();
+
+    assert_eq!(summary_of(&mut app, "Andere.pdf"), "Ein Brief.");
+}
+
+#[test]
+fn test_update_summary_fails_for_an_unknown_letter() {
+    let mut app = test_app("app_summary_unknown");
+
+    let error = app.crud.update_summary(42, "Neu").unwrap_err();
+
+    assert!(error.to_string().contains("not in the archive"), "got: {error}");
+}
+
+/// A summary is free text, so quotes and `;` can't be refused. They are stored exactly as
+/// typed and never become SQL: the table and both rows are still there.
+#[test]
+fn test_update_summary_stores_quotes_and_sql_as_plain_text() {
+    let (mut app, _) = test_app_with_letter("app_summary_sql", "Brief.pdf");
+    add_letter(&mut app, "Andere.pdf", "Ein anderer Brief");
+    let id = id_of(&mut app, "Brief.pdf");
+    let attack = "O'Brien'; DROP TABLE documents;--";
+
+    app.crud.update_summary(id, attack).unwrap();
+
+    assert_eq!(summary_of(&mut app, "Brief.pdf"), attack);
+    assert_eq!(app.crud.find_all(10).unwrap().len(), 2);
+}
+
+#[test]
+fn test_edit_summary_opens_the_box_with_the_current_summary() {
+    let (mut app, output) = test_app_with_letter("app_summary_open", "Brief.pdf");
+    let path = output.join("Brief.pdf");
+
+    app.act_on_pdf_click(&egui::Context::default(), PdfClick::EditSummary(path.clone()));
+
+    let renaming = app.archive.renaming.as_ref().unwrap();
+    assert_eq!(renaming.text, "Ein Brief.");
+    // The box belongs to the summary cell of that row, not to its date cell.
+    assert!(renaming.is_for(&path, EditKind::Summary));
+    assert!(!renaming.is_for(&path, EditKind::Date));
+}
+
+#[test]
+fn test_enter_saves_the_summary_and_reloads_the_table() {
+    let (mut app, output) = test_app_with_letter("app_summary_ok", "Finanzamt/Brief.pdf");
+    let path = output.join("Finanzamt/Brief.pdf");
+    let ctx = egui::Context::default();
+    app.act_on_pdf_click(&ctx, PdfClick::EditSummary(path.clone()));
+    app.archive.renaming.as_mut().unwrap().text = " Neue Zusammenfassung ".to_string();
+
+    app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
+
+    assert!(app.archive.renaming.is_none(), "the box is gone after saving");
+    assert_eq!(app.archive.pdfs[0].summary, "Neue Zusammenfassung");
+    assert!(path.exists(), "the PDF stays where it is");
+    assert_eq!(app.archive.pdfs[0].file_path, "Finanzamt/Brief.pdf");
+}
+
+#[test]
+fn test_esc_in_the_summary_box_changes_nothing() {
+    let (mut app, output) = test_app_with_letter("app_summary_esc", "Brief.pdf");
+    let ctx = egui::Context::default();
+    app.act_on_pdf_click(&ctx, PdfClick::EditSummary(output.join("Brief.pdf")));
+    app.archive.renaming.as_mut().unwrap().text = "Neue Zusammenfassung".to_string();
+
+    app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);
+
+    assert!(app.archive.renaming.is_none());
+    assert_eq!(app.archive.pdfs[0].summary, "Ein Brief.");
 }

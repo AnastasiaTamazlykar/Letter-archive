@@ -89,6 +89,8 @@ enum EditKind {
     Category,
     /// The letter date: only the database changes, not the file.
     Date,
+    /// The summary: only the database changes, not the file.
+    Summary,
 }
 
 /// The edit in progress: a cell of the table (file name, category or letter date) is a text
@@ -121,6 +123,11 @@ impl Renaming {
     /// current one ("" if it has none).
     fn of_date(path: PathBuf, date: String) -> Self {
         Renaming { path, text: date, kind: EditKind::Date, error: String::new(), focused: false }
+    }
+
+    /// Editing the summary of the PDF at `path`; the box starts with `summary`, its current one.
+    fn of_summary(path: PathBuf, summary: String) -> Self {
+        Renaming { path, text: summary, kind: EditKind::Summary, error: String::new(), focused: false }
     }
 
     /// Editing the category of the PDF at `path`; the box starts with its current category,
@@ -335,8 +342,14 @@ impl App {
                 return;
             }
             PdfClick::EditDate(path) => {
-                let date = self.stored_date(&path).unwrap_or_default(); // "" if none
-                self.archive.renaming = Some(Renaming::of_date(path, date));
+                // `and_then`: no stored letter, or a letter without a date, both give `None`.
+                let date = self.stored_letter(&path).and_then(|letter| letter.letter_date);
+                self.archive.renaming = Some(Renaming::of_date(path, date.unwrap_or_default())); // "" if none
+                return;
+            }
+            PdfClick::EditSummary(path) => {
+                let summary = self.stored_letter(&path).map(|letter| letter.summary);
+                self.archive.renaming = Some(Renaming::of_summary(path, summary.unwrap_or_default()));
                 return;
             }
             PdfClick::RenameSubmit => {
@@ -375,6 +388,7 @@ impl App {
             EditKind::Name => rename_pdf,
             EditKind::Category => change_category,
             EditKind::Date => change_date,
+            EditKind::Summary => change_summary,
         };
         match change(&mut self.crud, &self.config.output_dir, &old, &renaming.text) {
             Err(error) => {
@@ -385,7 +399,7 @@ impl App {
                 self.archive.renaming = None;
                 self.reload_table();
                 // The renamed PDF was shown right of the table: show it under its new name.
-                // (A date change keeps the file, so there is nothing to show again.)
+                // (A date or summary change keeps the file, so there is nothing to show again.)
                 if new != old && self.archive.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
                     self.show_pdf(ctx, &new);
                 }
@@ -393,10 +407,10 @@ impl App {
         }
     }
 
-    /// The letter date stored for the PDF at `path`; `None` if it has none or is not stored.
-    fn stored_date(&mut self, path: &Path) -> Option<String> {
+    /// The stored letter whose PDF is at `path`; `None` if it is not in the archive.
+    fn stored_letter(&mut self, path: &Path) -> Option<Document> {
         let id = letter_id(&mut self.crud, &self.config.output_dir, path).ok()?;
-        self.crud.document(id).ok()??.letter_date
+        self.crud.document(id).ok()?
     }
 
     /// Asks for a PDF with the macOS Open panel, then analyzes and files it in the
@@ -432,6 +446,19 @@ fn change_date(
 ) -> Result<PathBuf, Box<dyn Error>> {
     let id = letter_id(crud, output_dir, path)?;
     crud.update_letter_date(id, date)?;
+    Ok(path.to_path_buf())
+}
+
+/// Saves `summary` as the summary of the PDF at `path`. The same arguments and result as
+/// `change_date`, so `finish_rename` can pick it the same way.
+fn change_summary(
+    crud: &mut PdfCrud,
+    output_dir: &Path,
+    path: &Path,
+    summary: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let id = letter_id(crud, output_dir, path)?;
+    crud.update_summary(id, summary)?;
     Ok(path.to_path_buf())
 }
 
