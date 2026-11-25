@@ -111,21 +111,36 @@ enum PdfClick {
     Rename(PathBuf),
     /// "Rename" in the right-click menu of the category: the category turns into a text box.
     RenameCategory(PathBuf),
+    /// "Edit" in the right-click menu of the letter date: the date turns into a text box.
+    EditDate(PathBuf),
     /// Enter in that text box: rename the file, or move it to the typed category.
     RenameSubmit,
     /// Esc in that text box, or a click somewhere else: keep the old name.
     RenameCancel,
 }
 
-/// The rename in progress: the file name in the table is a text box while this exists.
+/// Which cell of a row is a text box.
+/// `Copy` + `PartialEq`: a tiny value that is copied and compared like a number.
+#[derive(Clone, Copy, PartialEq)]
+enum EditKind {
+    /// The file name.
+    Name,
+    /// The category: the file moves to that folder.
+    Category,
+    /// The letter date: only the database changes, not the file.
+    Date,
+}
+
+/// The edit in progress: a cell of the table (file name, category or letter date) is a text
+/// box while this exists.
 struct Renaming {
     /// The PDF's full path; tells the table which row to draw the box in.
     path: PathBuf,
-    /// The new name without ".pdf", or the new category if `category` is true; starts as
-    /// the current one.
+    /// The new name without ".pdf", the new category or the new letter date, depending on
+    /// `kind`; starts as the current one.
     text: String,
-    /// True when the category is edited (the file moves to that folder), false for the name.
-    category: bool,
+    /// What is edited.
+    kind: EditKind,
     /// Why the last try failed, shown under the box.
     error: String,
     /// False until the box has been given the keyboard focus (once at the start, and again
@@ -139,7 +154,13 @@ impl Renaming {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Renaming { path, text, category: false, error: String::new(), focused: false }
+        Renaming { path, text, kind: EditKind::Name, error: String::new(), focused: false }
+    }
+
+    /// Editing the letter date of the PDF at `path`; the box starts with `date`, its
+    /// current one ("" if it has none).
+    fn of_date(path: PathBuf, date: String) -> Self {
+        Renaming { path, text: date, kind: EditKind::Date, error: String::new(), focused: false }
     }
 
     /// Editing the category of the PDF at `path`; the box starts with its current category,
@@ -151,12 +172,12 @@ impl Renaming {
             .and_then(|relative| relative.parent())
             .map(|folder| folder.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Renaming { path, text, category: true, error: String::new(), focused: false }
+        Renaming { path, text, kind: EditKind::Category, error: String::new(), focused: false }
     }
 
-    /// True if this edit is for the name (or category) cell of the row of `path`.
-    fn is_for(&self, path: &Path, category: bool) -> bool {
-        self.path == path && self.category == category
+    /// True if this edit is for the `kind` cell of the row of `path`.
+    fn is_for(&self, path: &Path, kind: EditKind) -> bool {
+        self.path == path && self.kind == kind
     }
 }
 
@@ -472,6 +493,11 @@ impl App {
                 self.renaming = Some(Renaming::of_category(path, &self.settings.output_dir));
                 return;
             }
+            PdfClick::EditDate(path) => {
+                let date = self.stored_date(&path).unwrap_or_default(); // "" if none
+                self.renaming = Some(Renaming::of_date(path, date));
+                return;
+            }
             PdfClick::RenameSubmit => {
                 self.finish_rename(ctx);
                 return;
@@ -526,7 +552,11 @@ impl App {
         // `self.crud`, `self.settings` and `self.renaming` are different fields, so Rust
         // lets us borrow all three at once.
         // Both functions take the same arguments: pick the one for what is being edited.
-        let change = if renaming.category { change_category } else { rename_pdf };
+        let change = match renaming.kind {
+            EditKind::Name => rename_pdf,
+            EditKind::Category => change_category,
+            EditKind::Date => change_date,
+        };
         match change(&mut self.crud, &self.settings.output_dir, &old, &renaming.text) {
             Err(error) => {
                 renaming.error = error.to_string();
@@ -536,11 +566,18 @@ impl App {
                 self.renaming = None;
                 self.reload_table();
                 // The renamed PDF was shown right of the table: show it under its new name.
-                if self.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
+                // (A date change keeps the file, so there is nothing to show again.)
+                if new != old && self.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
                     self.show_pdf(ctx, &new);
                 }
             }
         }
+    }
+
+    /// The letter date stored for the PDF at `path`; `None` if it has none or is not stored.
+    fn stored_date(&mut self, path: &Path) -> Option<String> {
+        let id = letter_id(&mut self.crud, &self.settings.output_dir, path).ok()?;
+        self.crud.document(id).ok()??.letter_date
     }
 
     fn images_tab(&mut self, ui: &mut egui::Ui) {
@@ -1003,14 +1040,14 @@ fn pdf_row(
     row.col(|ui| {
         // The row being renamed shows a text box instead of the file name link.
         // `as_mut` lends the box's data out for changing; `filter` keeps it only for this row.
-        click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, false)) {
+        click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, EditKind::Name)) {
             Some(renaming) => rename_cell(ui, renaming),
             None => file_link(ui, &pdf.path),
         };
     });
     row.col(|ui| {
         // The same for the category: a box in the row being edited, else the category itself.
-        let cell_click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, true)) {
+        let cell_click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, EditKind::Category)) {
             Some(renaming) => rename_cell(ui, renaming),
             None => category_label(ui, pdf),
         };
@@ -1020,7 +1057,14 @@ fn pdf_row(
         }
     });
     row.col(|ui| {
-        ui.label(pdf.letter_date.unwrap_or("-"));
+        // The same for the letter date.
+        let cell_click = match renaming.as_mut().filter(|renaming| renaming.is_for(&pdf.path, EditKind::Date)) {
+            Some(renaming) => rename_cell(ui, renaming),
+            None => date_label(ui, pdf),
+        };
+        if cell_click.is_some() {
+            click = cell_click;
+        }
     });
     row.col(|ui| {
         ui.add(egui::Label::new(pdf.summary).wrap())
@@ -1084,6 +1128,40 @@ fn category_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
     click
 }
 
+/// The id of the stored letter whose PDF is at `path`, a full path inside `output_dir`.
+fn letter_id(crud: &mut PdfCrud, output_dir: &Path, path: &Path) -> Result<i64, Box<dyn Error>> {
+    // The database keeps the path inside the archive folder only.
+    let relative = path.strip_prefix(output_dir)?.to_str().ok_or("path is not UTF-8")?;
+    Ok(crud.find_by_file_path(relative)?.ok_or("this PDF is not in the archive")?)
+}
+
+/// Saves `date` as the letter date of the PDF at `path`. Takes the same arguments and
+/// returns the same as `rename_pdf` and `change_category`, so `finish_rename` can use any
+/// of the three; the PDF stays where it is, so it returns `path` itself.
+fn change_date(
+    crud: &mut PdfCrud,
+    output_dir: &Path,
+    path: &Path,
+    date: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let id = letter_id(crud, output_dir, path)?;
+    crud.update_letter_date(id, date)?;
+    Ok(path.to_path_buf())
+}
+
+/// The letter date as text; a right click offers to edit it.
+fn date_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
+    let label = ui.add(egui::Label::new(pdf.letter_date.unwrap_or("-")).sense(egui::Sense::click()));
+    let mut click = None;
+    label.context_menu(|ui| {
+        if ui.button("Edit").clicked() {
+            click = Some(PdfClick::EditDate(pdf.path.clone()));
+            ui.close();
+        }
+    });
+    click
+}
+
 fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
     // The text box that replaces the file name or the category while it is edited (".pdf"
     // follows a file name), with the reason under it if the last try failed. Enter saves,
@@ -1091,14 +1169,15 @@ fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
     let mut click = None;
     ui.horizontal(|ui| {
         // ".pdf" only follows a file name, not a category.
-        let suffix_width = if renaming.category { 0.0 } else { RENAME_SUFFIX_WIDTH };
+        let is_name = renaming.kind == EditKind::Name;
+        let suffix_width = if is_name { RENAME_SUFFIX_WIDTH } else { 0.0 };
         let width = (ui.available_width() - suffix_width).max(0.0);
         let name = ui.add(egui::TextEdit::singleline(&mut renaming.text).desired_width(width));
         if !renaming.focused {
             name.request_focus(); // so the user can type at once
             renaming.focused = true;
         }
-        if !renaming.category {
+        if is_name {
             ui.label(".pdf");
         }
         // Enter, Esc and a click elsewhere all take the focus away from the box;

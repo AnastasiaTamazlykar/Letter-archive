@@ -246,11 +246,11 @@ fn test_rename_on_a_category_opens_the_box_with_the_current_category() {
     app.act_on_pdf_click(&egui::Context::default(), PdfClick::RenameCategory(path.clone()));
 
     let renaming = app.renaming.as_ref().unwrap();
-    assert!(renaming.category);
+    assert!(renaming.kind == EditKind::Category);
     assert_eq!(renaming.text, "Gesundheit/teeth");
     // The box belongs to the category cell of that row, not to its file name cell.
-    assert!(renaming.is_for(&path, true));
-    assert!(!renaming.is_for(&path, false));
+    assert!(renaming.is_for(&path, EditKind::Category));
+    assert!(!renaming.is_for(&path, EditKind::Name));
 }
 
 #[test]
@@ -402,6 +402,72 @@ fn height_of_images_top(app: &mut App) -> f32 {
     });
     output.textures_delta.clear(); // see `draw_job_queue`
     height
+}
+
+// ---- Editing the letter date in the table ----
+
+#[test]
+fn test_edit_date_opens_the_box_with_the_current_date() {
+    let (mut app, output) = test_app_with_letter("app_date_open", "Brief.pdf");
+    let path = output.join("Brief.pdf");
+    let ctx = egui::Context::default();
+
+    // The test letter has no date: the box starts empty, in the date cell of that row.
+    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path.clone()));
+    let renaming = app.renaming.as_ref().unwrap();
+    assert_eq!(renaming.text, "");
+    assert!(renaming.is_for(&path, EditKind::Date));
+    assert!(!renaming.is_for(&path, EditKind::Name));
+
+    let id = app.crud.find_by_file_path("Brief.pdf").unwrap().unwrap();
+    app.crud.update_letter_date(id, "2025-03-04").unwrap();
+    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path));
+    assert_eq!(app.renaming.as_ref().unwrap().text, "2025-03-04");
+}
+
+#[test]
+fn test_enter_saves_the_date_and_reloads_the_table() {
+    let (mut app, output) = test_app_with_letter("app_date_ok", "Finanzamt/Brief.pdf");
+    let path = output.join("Finanzamt/Brief.pdf");
+    let ctx = egui::Context::default();
+    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path.clone()));
+    app.renaming.as_mut().unwrap().text = " 2024-12-31 ".to_string();
+
+    app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
+
+    assert!(app.renaming.is_none(), "the box is gone after saving");
+    assert_eq!(app.pdfs[0].letter_date.as_deref(), Some("2024-12-31"));
+    assert!(path.exists(), "the PDF stays where it is");
+    assert_eq!(app.pdfs[0].file_path, "Finanzamt/Brief.pdf");
+}
+
+#[test]
+fn test_an_invalid_date_keeps_the_box_open_with_the_reason() {
+    let (mut app, output) = test_app_with_letter("app_date_bad", "Brief.pdf");
+    let ctx = egui::Context::default();
+    app.act_on_pdf_click(&ctx, PdfClick::EditDate(output.join("Brief.pdf")));
+    app.renaming.as_mut().unwrap().text = "25.11.2025".to_string();
+    app.renaming.as_mut().unwrap().focused = true;
+
+    app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
+
+    let renaming = app.renaming.as_ref().expect("the box stays open");
+    assert!(renaming.error.contains("YYYY-MM-DD"), "got: {}", renaming.error);
+    assert!(!renaming.focused, "the box asks for the focus again, to keep typing");
+    assert_eq!(app.pdfs[0].letter_date, None);
+}
+
+#[test]
+fn test_esc_in_the_date_box_changes_nothing() {
+    let (mut app, output) = test_app_with_letter("app_date_esc", "Brief.pdf");
+    let ctx = egui::Context::default();
+    app.act_on_pdf_click(&ctx, PdfClick::EditDate(output.join("Brief.pdf")));
+    app.renaming.as_mut().unwrap().text = "2024-12-31".to_string();
+
+    app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);
+
+    assert!(app.renaming.is_none());
+    assert_eq!(app.pdfs[0].letter_date, None);
 }
 
 #[test]

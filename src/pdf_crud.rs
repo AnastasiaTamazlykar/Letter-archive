@@ -206,8 +206,28 @@ impl PdfCrud {
             .execute(&mut self.db)?;
         Ok(())
     }
+    /// Overwrites the letter date of letter `id` with `date`, written `YYYY-MM-DD`.
+    /// Spaces around it are ignored; an empty text removes the date. Anything else that is
+    /// not a real date is an error and the old date stays.
+    pub fn update_letter_date(&mut self, id: i64, date: &str) -> Result<(), Box<dyn Error>> {
+        let date = date.trim();
+        // `None` is stored as NULL, "no date".
+        let iso = match date {
+            "" => None,
+            _ => Some(Self::verify_date(date).ok_or("use the format YYYY-MM-DD, like 2025-11-25")?),
+        };
+        // UPDATE documents SET letter_date = ? WHERE id = ?. The values are bound
+        // parameters, never pasted into the SQL text, so what is typed cannot change the query.
+        let changed = diesel::update(documents::table.find(id))
+            .set(documents::letter_date.eq(iso))
+            .execute(&mut self.db)?;
+        if changed == 0 {
+            return Err("this letter is not in the archive".into()); // no row had this id
+        }
+        Ok(())
+    }
 
-    /// Removes one letter. The search index follows by itself (the delete trigger).
+
     pub fn delete_letter(&mut self, id: i64) -> QueryResult<()> {
         diesel::delete(documents::table.find(id)).execute(&mut self.db)?;
         Ok(())

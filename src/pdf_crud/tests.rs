@@ -180,6 +180,103 @@ fn test_update_file_path_changes_only_that_row() {
     assert_eq!(archive.document(other_id).unwrap().unwrap().file_path, "other.pdf");
 }
 
+/// Two stored letters, both dated 2025-11-25; their ids.
+fn two_letters(archive: &mut PdfCrud, name: &str) -> (i64, i64) {
+    let folder = test_folder(name);
+    let (first, second) = (folder.join("first.pdf"), folder.join("second.pdf"));
+    write_pdf(&first, &LETTER);
+    write_pdf(&second, &["Ein anderer Brief"]);
+    (store(archive, &first), store(archive, &second))
+}
+
+/// The stored date of letter `id`.
+fn date_of(archive: &mut PdfCrud, id: i64) -> Option<String> {
+    archive.document(id).unwrap().unwrap().letter_date
+}
+
+#[test]
+fn test_update_letter_date_overwrites_the_stored_date() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, _) = two_letters(&mut archive, "date_overwrite");
+
+    archive.update_letter_date(id, "2024-01-31").unwrap();
+
+    assert_eq!(date_of(&mut archive, id).as_deref(), Some("2024-01-31"));
+}
+
+#[test]
+fn test_update_letter_date_ignores_spaces_around_the_date() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, _) = two_letters(&mut archive, "date_trim");
+
+    archive.update_letter_date(id, "  2024-01-31 ").unwrap();
+
+    assert_eq!(date_of(&mut archive, id).as_deref(), Some("2024-01-31"));
+}
+
+#[test]
+fn test_update_letter_date_with_empty_text_removes_the_date() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, _) = two_letters(&mut archive, "date_clear");
+
+    archive.update_letter_date(id, "  ").unwrap();
+
+    assert_eq!(date_of(&mut archive, id), None);
+}
+
+#[test]
+fn test_update_letter_date_refuses_a_bad_date_and_keeps_the_old_one() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, _) = two_letters(&mut archive, "date_bad");
+
+    for bad in ["31.12.2025", "2025-02-30", "tomorrow", "2025-13-01"] {
+        let error = archive.update_letter_date(id, bad).unwrap_err();
+        assert!(error.to_string().contains("YYYY-MM-DD"), "{bad}: {error}");
+    }
+
+    assert_eq!(date_of(&mut archive, id).as_deref(), Some("2025-11-25"));
+}
+
+#[test]
+fn test_update_letter_date_changes_only_that_row() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, other) = two_letters(&mut archive, "date_one_row");
+
+    archive.update_letter_date(id, "2020-05-06").unwrap();
+
+    assert_eq!(date_of(&mut archive, other).as_deref(), Some("2025-11-25"));
+}
+
+#[test]
+fn test_update_letter_date_fails_for_an_unknown_letter() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+
+    let error = archive.update_letter_date(42, "2025-01-01").unwrap_err();
+
+    assert!(error.to_string().contains("not in the archive"), "got: {error}");
+}
+
+/// What is typed never becomes SQL: it is refused as "not a date", and the table and its
+/// rows are untouched.
+#[test]
+fn test_update_letter_date_cannot_be_used_for_sql_injection() {
+    let mut archive = PdfCrud::in_memory().unwrap();
+    let (id, _) = two_letters(&mut archive, "date_injection");
+
+    for attack in [
+        "2025-01-01'; DROP TABLE documents;--",
+        "'; UPDATE documents SET letter_date = '1999-01-01';--",
+        "2025-01-01' OR '1'='1",
+    ] {
+        assert!(archive.update_letter_date(id, attack).is_err(), "accepted: {attack}");
+    }
+
+    // The table still exists, and both rows still have their date.
+    let rows = archive.find_all(10).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.letter_date.as_deref() == Some("2025-11-25")));
+}
+
 #[test]
 fn test_delete_letter_removes_the_row_and_its_search_hits() {
     let pdf = test_folder("delete").join("brief.pdf");
