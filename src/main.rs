@@ -17,7 +17,7 @@ mod pdf_crud;
 mod pipeline;
 mod rescan;
 mod schema;
-mod settings;
+mod config;
 
 mod summarize_with_ai;
 // Helpers for the tests of several modules; `cfg(test)`: left out of the app itself.

@@ -160,7 +160,7 @@ impl App {
             if response.clicked() {
                 self.start_conversion(ui.ctx(), selected);
             }
-            ui.weak(format!("→ {}", self.settings.output_dir.display()));
+            ui.weak(format!("→ {}", self.config.output_dir.display()));
         });
     }
 
@@ -172,7 +172,7 @@ impl App {
             picture.selected = false;
         }
         // `clone` gives the thread its own handle to the window; both point to the same one.
-        let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
+        let output_dir = self.config.output_dir.clone(); // the thread gets its own copy
         self.conversions.push(Conversion::start_images(images, output_dir, ctx.clone()));
     }
 

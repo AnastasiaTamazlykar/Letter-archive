@@ -12,4 +12,4 @@ pub const INPUT_DIR: &str = "data/pdfs/input";
 pub const OUTPUT_DIR: &str = "data/pdfs/output";
 
 /// The user's settings (see `settings.rs`).
-pub const SETTINGS_FILE: &str = "data/settings.json";
+pub const CONFIG_FILE: &str = "data/settings.json";

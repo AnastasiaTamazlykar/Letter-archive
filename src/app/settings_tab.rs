@@ -8,7 +8,7 @@ use eframe::egui;
 
 use super::App;
 use crate::archive_folder_manipulations::move_archive::move_archive;
-use crate::paths::SETTINGS_FILE;
+use crate::paths::CONFIG_FILE;
 
 // The Settings tab's part of `App`; the rest of its methods are in `app.rs` and the other tabs.
 impl App {
@@ -16,7 +16,7 @@ impl App {
     pub(super) fn settings_tab(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Output folder:");
-            ui.monospace(self.settings.output_dir.display().to_string())
+            ui.monospace(self.config.output_dir.display().to_string())
                 .on_hover_text("Where analyzed PDFs are copied to; its subfolders are the categories");
         });
         ui.horizontal(|ui| {
@@ -51,13 +51,13 @@ impl App {
         else {
             return;
         };
-        if let Err(error) = move_archive(&self.settings.output_dir, &target) {
+        if let Err(error) = move_archive(&self.config.output_dir, &target) {
             self.settings_status = format!("Not moved: {error}");
             return;
         }
         let place = target.display().to_string();
-        self.settings.output_dir = target;
-        self.settings_status = match self.settings.save(Path::new(SETTINGS_FILE)) {
+        self.config.output_dir = target;
+        self.settings_status = match self.config.save(Path::new(CONFIG_FILE)) {
             Ok(()) => format!("Moved to {place}."),
             // Without the saved setting, the next start would look in the old place.
             Err(error) => format!("Moved to {place}, but the setting was not saved: {error}"),
@@ -69,7 +69,7 @@ impl App {
     /// saved for the next start; does nothing on Cancel. PDFs filed so far stay where they are.
     fn pick_output_dir(&mut self) {
         // The panel opens in the current output folder; it needs a full path for that.
-        let current = std::path::absolute(&self.settings.output_dir).unwrap_or_default();
+        let current = std::path::absolute(&self.config.output_dir).unwrap_or_default();
         let Some(folder) = rfd::FileDialog::new()
             .set_title("Choose the output folder")
             .set_directory(current)
@@ -77,8 +77,8 @@ impl App {
         else {
             return;
         };
-        self.settings.output_dir = folder;
-        self.settings_status = match self.settings.save(Path::new(SETTINGS_FILE)) {
+        self.config.output_dir = folder;
+        self.settings_status = match self.config.save(Path::new(CONFIG_FILE)) {
             Ok(()) => "Saved."
                 .to_string(),
             Err(error) => format!("Could not save the settings: {error}"),

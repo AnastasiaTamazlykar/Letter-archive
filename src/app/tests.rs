@@ -26,7 +26,7 @@ pub(super) fn test_app(name: &str) -> App {
         date_order: DateOrder::default(),
         category: None,
         categories: vec![],
-        settings: Settings::default(),
+        config: Config::default(),
         settings_status: String::new(),
     }
 }
@@ -128,7 +128,7 @@ fn test_job_queue_draws_running_and_finished_jobs_without_a_click() {
 fn test_app_with_letter(name: &str, relative: &str) -> (App, PathBuf) {
     let mut app = test_app(name);
     let output = test_folder(&format!("{name}_output"));
-    app.settings.output_dir = output.clone();
+    app.config.output_dir = output.clone();
     let pdf = output.join(relative);
     std::fs::create_dir_all(pdf.parent().unwrap()).unwrap();
     crate::test_support::write_pdf(&pdf, &["Finanzamt Berlin"]);

@@ -1,24 +1,22 @@
 //! The app window: drop images on it to see them as thumbnails; click one to see it large;
 //! put them in order, tick some and file them as one analyzed PDF.
 
-use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
-use crate::paths::{DB_FILE, SETTINGS_FILE};
-use crate::settings::Settings;
 use crate::convert::Conversion;
+use crate::paths::{DB_FILE, CONFIG_FILE};
+use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
+use crate::config::Config;
 use eframe::egui;
 use std::path::Path;
 
-// The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
-mod sort_filter;
 // The list of running and finished filing jobs lives in `src/app/job_queue.rs`.
 mod job_queue;
 use job_queue::job_queue;
 // The Archive tab (the table of processed PDFs) lives in `src/app/archive_tab.rs`.
 mod archive_tab;
-use archive_tab::{PDF_VIEW_SHARE, PdfView, Renaming};
 // Only the tests use these here: `use super::*` in `tests.rs` picks them up from `app`.
 #[cfg(test)]
 use archive_tab::{EditKind, PdfClick, rename_cell};
+use archive_tab::{PDF_VIEW_SHARE, PdfView, Renaming};
 // The Images → PDF tab lives in `src/app/images_tab.rs`.
 mod images_tab;
 use images_tab::{PREVIEW_SHARE, Picture, Preview};
@@ -76,7 +74,7 @@ pub struct App {
     /// The choices of the category menu, from the database.
     categories: Vec<String>,
     /// The user's settings, read from `SETTINGS_FILE` at the start.
-    settings: Settings,
+    config: Config,
     /// Whether the last change in the Settings tab was saved; shown there.
     settings_status: String,
 }
@@ -134,7 +132,7 @@ impl App {
             date_order: DateOrder::default(),
             category: None,
             categories: vec![],
-            settings: Settings::load(Path::new(SETTINGS_FILE)),
+            config: Config::load(Path::new(CONFIG_FILE)),
             settings_status: "".to_string(),
         }
     }

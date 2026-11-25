@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 
-use super::sort_filter::{category_menu, date_order_menu};
+use sort_filter::{category_menu, date_order_menu};
 use super::{App, DIVIDER_WIDTH, file_name};
 use crate::archive_folder_manipulations::{path_change::change_category, rename_file::rename_pdf};
 use crate::convert::Conversion;
@@ -19,6 +19,9 @@ use crate::rescan;
 
 // The PDF shown right of the table lives in `src/app/archive_tab/pdf_view.rs`.
 mod pdf_view;
+// The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
+mod sort_filter;
+
 // `pub(super) use`: passes these on to `app.rs`, which can then keep importing them from here.
 pub(super) use pdf_view::{PDF_VIEW_SHARE, PdfView};
 use pdf_view::{PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, divider, pdf_view_area};
@@ -126,7 +129,7 @@ impl App {
     /// PDF is gone (see `rescan.rs`), shows what it did, then reloads the table.
     /// Runs at startup and from the Rescan button.
     pub fn rescan(&mut self) {
-        self.rescan_status = match rescan::rescan(&mut self.crud, &self.settings.output_dir) {
+        self.rescan_status = match rescan::rescan(&mut self.crud, &self.config.output_dir) {
             Ok(report) => report.summary(),
             Err(error) => format!("Rescan failed: {error}"),
         };
@@ -170,7 +173,7 @@ impl App {
     /// The main page: a + button to add a PDF, and the table of stored PDFs.
     pub(super) fn archive_tab(&mut self, ui: &mut egui::Ui) {
         // `display()`: a path as text to show; it may not be valid UTF-8, so no plain `{}`.
-        let output_dir = self.settings.output_dir.display().to_string();
+        let output_dir = self.config.output_dir.display().to_string();
         // The Analyze button has a row of its own. Jobs run side by side, so it is always available.
         if ui
             .button("Process new PDF file…")
@@ -225,7 +228,7 @@ impl App {
         });
         ui.add_space(SEARCH_GAP);
         // Already sorted and filtered by the database.
-        let root = &self.settings.output_dir;
+        let root = &self.config.output_dir;
         let rows: Vec<PdfRow> = if !self.search.is_empty() {
             self.hits.iter().map(|hit| PdfRow::of_hit(hit, root)).collect()
         } else {
@@ -304,7 +307,7 @@ impl App {
                 return;
             }
             PdfClick::RenameCategory(path) => {
-                self.renaming = Some(Renaming::of_category(path, &self.settings.output_dir));
+                self.renaming = Some(Renaming::of_category(path, &self.config.output_dir));
                 return;
             }
             PdfClick::EditDate(path) => {
@@ -349,7 +352,7 @@ impl App {
             EditKind::Category => change_category,
             EditKind::Date => change_date,
         };
-        match change(&mut self.crud, &self.settings.output_dir, &old, &renaming.text) {
+        match change(&mut self.crud, &self.config.output_dir, &old, &renaming.text) {
             Err(error) => {
                 renaming.error = error.to_string();
                 renaming.focused = false; // give the box the focus again
@@ -368,7 +371,7 @@ impl App {
 
     /// The letter date stored for the PDF at `path`; `None` if it has none or is not stored.
     fn stored_date(&mut self, path: &Path) -> Option<String> {
-        let id = letter_id(&mut self.crud, &self.settings.output_dir, path).ok()?;
+        let id = letter_id(&mut self.crud, &self.config.output_dir, path).ok()?;
         self.crud.document(id).ok()??.letter_date
     }
 
@@ -382,7 +385,7 @@ impl App {
         else {
             return;
         };
-        let output_dir = self.settings.output_dir.clone(); // the thread gets its own copy
+        let output_dir = self.config.output_dir.clone(); // the thread gets its own copy
         self.conversions.push(Conversion::start_pdf(pdf, output_dir, ctx.clone()));
     }
 }

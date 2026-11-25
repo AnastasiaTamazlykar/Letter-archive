@@ -17,32 +17,32 @@ use crate::paths::OUTPUT_DIR;
 /// older settings file still loads after a new setting is added here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Settings {
+pub struct Config {
     /// Where analyzed PDFs are copied to; its subfolders are the categories.
     pub output_dir: PathBuf,
 }
 
 /// The settings before the user changed anything.
-impl Default for Settings {
+impl Default for Config {
     fn default() -> Self {
-        Settings {
+        Config {
             output_dir: PathBuf::from(OUTPUT_DIR),
         }
     }
 }
 
-impl Settings {
+impl Config {
     /// Reads the settings from `file`. With no file yet (the first run) or one that can't
     /// be read, it gives the defaults, so the app always starts.
-    pub fn load(file: &Path) -> Settings {
+    pub fn load(file: &Path) -> Config {
         let Ok(text) = fs::read_to_string(file) else {
-            return Settings::default();
+            return Config::default();
         };
         match serde_json::from_str(&text) {
             Ok(settings) => settings,
             Err(error) => {
                 eprintln!("cannot read {}: {error}; using the defaults", file.display());
-                Settings::default()
+                Config::default()
             }
         }
     }
