@@ -12,7 +12,7 @@ use egui_extras::{Column, Size, StripBuilder, TableBuilder, TableRow};
 use sort_filter::{category_menu, date_order_menu};
 use super::{App, DIVIDER_WIDTH, file_name};
 use crate::archive_folder_manipulations::{path_change::change_category, rename_file::rename_pdf};
-use crate::convert::Conversion;
+use crate::jobs::Job;
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
 use crate::rescan;
@@ -229,7 +229,7 @@ impl App {
         ui.horizontal(|ui| {
             // Not while letters are being filed: a rescan could remove a letter just added.
             if ui
-                .add_enabled(!self.is_filing(), egui::Button::new("Rescan archive folder"))
+                .add_enabled(!self.jobs.is_filing(), egui::Button::new("Rescan archive folder"))
                 .on_hover_text(format!(
                     "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
                 ))
@@ -242,7 +242,7 @@ impl App {
         });
         // The title of the table, on a line of its own.
         ui.label("Processed PDFs");
-        self.show_job_queue(ui);
+        self.jobs.show(ui);
         // The search box gets a row of its own, below the buttons, with space around it.
         ui.add_space(SEARCH_GAP);
         ui.horizontal(|ui| {
@@ -430,7 +430,7 @@ impl App {
             return;
         };
         let output_dir = self.config.output_dir.clone(); // the thread gets its own copy
-        self.conversions.push(Conversion::start_pdf(pdf, output_dir, ctx.clone()));
+        self.jobs.add(Job::start_pdf(pdf, output_dir, ctx.clone()));
     }
 }
 
@@ -620,7 +620,7 @@ fn date_label(ui: &mut egui::Ui, pdf: &PdfRow) -> Option<PdfClick> {
     click
 }
 
-pub(super) fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
+fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
     // The text box that replaces the file name or the category while it is edited (".pdf"
     // follows a file name), with the reason under it if the last try failed. Enter saves,
     // Esc or a click elsewhere cancels.

@@ -3,7 +3,7 @@
 mod app;
 // The window only lists and adds letters so far; search, `new` and `document` are
 // used by the tests only. `allow` silences their "never used" warnings until it is.
-mod convert;
+mod jobs;
 mod store_analyze_pdf;
 mod folders;
 mod language;

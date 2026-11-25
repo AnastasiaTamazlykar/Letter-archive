@@ -1,12 +1,3 @@
-//! Files a letter on a background thread, so the window keeps responding while Vision
-//! reads the letters and the LLM sums them up (several seconds). Every job gets its own
-//! thread, so any number of them can run at the same time. Two ways in:
-//! - images: they first become one PDF in the input folder;
-//! - a PDF the user picked.
-//!
-//! Both then go through `analyze_place_pdf`, which analyzes the PDF, copies it to the
-//! output folder and records it.
-
 use std::{
     error::Error,
     fs,
@@ -28,8 +19,7 @@ use crate::{
     pdf_name, pipeline,
 };
 
-/// A conversion running in the background; the window asks it for news every frame.
-pub struct Conversion {
+pub struct Job {
     /// What the job is about, to tell the jobs in the queue apart: "3 image(s)" or a file name.
     label: String,
     /// The receiving end of a channel: the thread sends its one result into it when done:
@@ -42,7 +32,7 @@ pub struct Conversion {
     result: Option<Result<PathBuf, String>>,
 }
 
-impl Conversion {
+impl Job {
     /// Starts making one PDF from `images`, one page per image, in the order given,
     /// and filing it in `output_dir`. `ctx` lets the thread wake the window up when done.
     pub fn start_images(images: Vec<PathBuf>, output_dir: PathBuf, ctx: egui::Context) -> Self {
@@ -81,7 +71,7 @@ impl Conversion {
             let _ = sender.send(result);
             ctx.request_repaint();
         });
-        Conversion {
+        Job {
             label,
             outcome,
             progress,
@@ -115,7 +105,7 @@ impl Conversion {
     pub fn already_done(label: &str, result: Result<PathBuf, String>) -> Self {
         let (sender, outcome) = mpsc::channel();
         sender.send(result).unwrap(); // waits in the channel until `receive` picks it up
-        Conversion {
+        Job {
             label: label.to_string(),
             outcome,
             progress: String::new(),
@@ -148,16 +138,92 @@ impl Conversion {
     }
 }
 
-/// Runs on the background thread: makes the PDF in the input folder, then files it in
-/// `output_dir`. The input PDF is kept, even if filing fails.
+/// The filing jobs, running in the background at the same time or already done, oldest
+/// first. A job that worked leaves the list at once; a failed one stays (to show its
+/// error) until the user clears it. It knows nothing about the window's tabs: `check`
+/// only reports that a letter was filed, and the window decides what to show.
+#[derive(Default)]
+pub struct JobQueue {
+    // `pub(crate)` for now, so the window's tests can look inside; private again once
+    // those tests move next to the jobs.
+    pub(crate) list: Vec<Job>,
+}
+
+impl JobQueue {
+    /// Adds a job that has just been started.
+    pub fn add(&mut self, job: Job) {
+        self.list.push(job);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    /// True while at least one job has not finished.
+    pub fn is_filing(&self) -> bool {
+        self.list.iter().any(|job| !job.is_finished())
+    }
+
+    /// Draws the list of jobs; removes the finished ones if "Clear finished" was clicked.
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        if job_queue(ui, &self.list) {
+            // `retain` keeps only the jobs for which the closure says true.
+            self.list.retain(|job| !job.is_finished());
+        }
+    }
+
+    pub fn are_freshly_finished_jobs(&mut self) -> bool {
+        let mut are_freshly_finished_jobs = false;
+        for job in &mut self.list {
+            let was_finished = job.is_finished();
+            job.receive();
+            // Only a job that finished in this frame counts; old ones were handled before.
+            are_freshly_finished_jobs |= !was_finished && job.succeeded();
+        }
+        // A job that worked has nothing more to say: the letter is in the table. A failed
+        // one stays in the queue, with its error, until the user clears it.
+        self.list.retain(|job| !job.succeeded());
+        are_freshly_finished_jobs
+    }
+}
+
+/// Draws one line per job: a spinner and its progress while it runs, then its result.
+/// Draws nothing when there are no jobs. Returns whether "Clear finished" was clicked;
+/// the caller removes the finished jobs, because only it owns the list.
+pub(crate) fn job_queue(ui: &mut egui::Ui, jobs: &[Job]) -> bool {
+    if jobs.is_empty() {
+        return false;
+    }
+    let running = jobs.iter().filter(|job| !job.is_finished()).count();
+    // A job that worked has already left the list, so a finished one here has failed.
+    let failed = jobs.len() - running;
+    let mut clear = false;
+    ui.horizontal(|ui| {
+        ui.strong(format!("Jobs: {running} running, {failed} failed"));
+        // Nothing to clear while every job is still running.
+        clear = ui
+            .add_enabled(failed > 0, egui::Button::new("Clear failed"))
+            .clicked();
+    });
+    for job in jobs {
+        ui.horizontal(|ui| {
+            if job.is_finished() {
+                ui.label(format!("{}: {}", job.label(), job.summary()));
+            } else {
+                ui.spinner();
+                ui.label(job.progress());
+            }
+        });
+    }
+    clear
+}
+
 fn create_and_file(images: &[PathBuf], output_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let input = new_input_path()?;
     pipeline::images_to_pdf(images, &input, language::LETTERS.code)?;
     analyze_place_pdf(&input, output_dir, &mut open_archive()?)
 }
 
-/// The thread opens its own database connection: the window's one can't be shared
-/// with another thread. SQLite is fine with two connections to one file.
 fn open_archive() -> Result<PdfCrud, Box<dyn Error>> {
     PdfCrud::open(Path::new(DB_FILE))
 }
@@ -187,10 +253,8 @@ mod tests {
 
     use super::*;
 
-    /// A conversion with no thread behind it: the test itself plays the thread by
-    /// sending into (or dropping) the other end of the channel.
-    fn by_hand(outcome: Receiver<Result<PathBuf, String>>) -> Conversion {
-        Conversion {
+    fn by_hand(outcome: Receiver<Result<PathBuf, String>>) -> Job {
+        Job {
             label: String::new(),
             outcome,
             progress: String::new(),
@@ -205,7 +269,7 @@ mod tests {
         let missing = PathBuf::from("/no/such/photo.HEIC");
         let output = PathBuf::from(crate::paths::OUTPUT_DIR);
         let mut conversion =
-            Conversion::start_images(vec![missing], output, egui::Context::default());
+            Job::start_images(vec![missing], output, egui::Context::default());
 
         // Ask now and then, the way the window does once per frame; give up after 5 s.
         for _ in 0..500 {
@@ -256,7 +320,7 @@ mod tests {
         let photos = vec![PathBuf::from("/no/such/a.HEIC"), PathBuf::from("/no/such/b.HEIC")];
         let output = PathBuf::from(crate::paths::OUTPUT_DIR);
 
-        let conversion = Conversion::start_images(photos, output, egui::Context::default());
+        let conversion = Job::start_images(photos, output, egui::Context::default());
 
         assert_eq!(conversion.label(), "2 image(s)");
     }

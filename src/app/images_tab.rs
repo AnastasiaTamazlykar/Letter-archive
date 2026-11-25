@@ -9,7 +9,7 @@ use eframe::egui;
 use egui_extras::{Size, StripBuilder};
 
 use super::{App, DIVIDER_WIDTH, file_name};
-use crate::{convert::Conversion, pipeline};
+use crate::{jobs::Job, pipeline};
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
@@ -124,10 +124,10 @@ impl App {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                if self.conversions.is_empty() {
+                                if self.jobs.is_empty() {
                                     ui.weak("Jobs show here while they run");
                                 }
-                                self.show_job_queue(ui);
+                                self.jobs.show(ui);
                             });
                     });
                 });
@@ -168,7 +168,7 @@ impl App {
                 .add_enabled(!selected.is_empty(), button)
                 .on_disabled_hover_text("Tick one or more images first");
             if response.clicked() {
-                self.start_conversion(ui.ctx(), selected);
+                self.start_jobs(ui.ctx(), selected);
             }
             ui.weak(format!("→ {}", self.config.output_dir.display()));
         });
@@ -177,13 +177,13 @@ impl App {
     /// Makes a PDF from the images, analyzes and files it, all in the background.
     /// The ticks are removed at once, so the next PDF can be picked right away and the
     /// same images are not filed twice by accident.
-    pub(super) fn start_conversion(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
+    pub(super) fn start_jobs(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
         for picture in &mut self.images.pictures {
             picture.selected = false;
         }
         // `clone` gives the thread its own handle to the window; both point to the same one.
         let output_dir = self.config.output_dir.clone(); // the thread gets its own copy
-        self.conversions.push(Conversion::start_images(images, output_dir, ctx.clone()));
+        self.jobs.add(Job::start_images(images, output_dir, ctx.clone()));
     }
 
     /// Shows how many images there are, then their thumbnails in rows that wrap.

@@ -5,6 +5,7 @@
 use super::*;
 use super::images_tab::{IMAGES_TOP_HEIGHT, Picture};
 use super::tests::{test_app, wait_until_done};
+use crate::jobs::Job;
 use std::path::PathBuf;
 
 /// A ticked picture of a file that doesn't exist (so a job made from it fails at once).
@@ -24,11 +25,11 @@ fn test_create_unticks_all_images_at_once() {
     let images = app.selected_paths();
     assert_eq!(images.len(), 1, "one picture is ticked before Create");
 
-    app.start_conversion(&egui::Context::default(), images);
+    app.start_jobs(&egui::Context::default(), images);
 
     // Right after the click, with the job still running.
     assert!(app.images.pictures.iter().all(|picture| !picture.selected));
-    assert!(app.is_filing());
+    assert!(app.jobs.is_filing());
     wait_until_done(&mut app);
 }
 
@@ -37,7 +38,7 @@ fn test_images_stay_in_the_list_after_create() {
     let mut app = test_app("app_keeps_images");
     app.images.pictures = vec![ticked_picture("a"), ticked_picture("b")];
 
-    app.start_conversion(&egui::Context::default(), app.selected_paths());
+    app.start_jobs(&egui::Context::default(), app.selected_paths());
 
     assert_eq!(app.images.pictures.len(), 2, "only the ticks go, not the images");
     wait_until_done(&mut app);
@@ -63,10 +64,10 @@ fn test_the_band_above_the_thumbnails_is_as_high_with_many_jobs_as_with_none() {
 
     for number in 0..12 {
         let error = Err(format!("job {number} failed"));
-        app.conversions.push(Conversion::already_done("2 image(s)", error));
+        app.jobs.add(Job::already_done("2 image(s)", error));
     }
-    app.check_conversions(); // collects the 12 results; failed jobs stay in the list
-    assert_eq!(app.conversions.len(), 12);
+    app.check_jobs(); // collects the 12 results; failed jobs stay in the list
+    assert_eq!(app.jobs.list.len(), 12);
     let crowded = height_of_images_top(&mut app);
 
     // The same height, so the thumbnails below never move.

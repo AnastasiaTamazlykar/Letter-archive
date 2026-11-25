@@ -1,13 +1,10 @@
-use crate::convert::Conversion;
+use crate::jobs::JobQueue;
 use crate::paths::{DB_FILE, CONFIG_FILE};
 use crate::pdf_crud::PdfCrud;
 use crate::config::Config;
 use eframe::egui;
 use std::path::Path;
 
-// The list of running and finished filing jobs lives in `src/app/job_queue.rs`.
-mod job_queue;
-use job_queue::job_queue;
 // The Archive tab (the table of processed PDFs) lives in `src/app/archive_tab.rs`.
 mod archive_tab;
 use archive_tab::ArchiveTab;
@@ -46,10 +43,7 @@ pub struct App {
     // ---- Shared by several tabs ----
     crud: PdfCrud,
     config: Config,
-    /// The filing jobs, running in the background at the same time or already done, oldest
-    /// first. A job that worked leaves the list at once; a failed one stays (to show its
-    /// error) until the user clears it.
-    conversions: Vec<Conversion>,
+    jobs: JobQueue,
 
     archive: ArchiveTab,
     images: ImagesTab,
@@ -62,7 +56,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let preview_size = ui.available_size() * PREVIEW_SHARE; // before the panel fills it
         self.take_dropped_files(ui.ctx());
-        self.check_conversions();
+        self.check_jobs();
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -97,41 +91,19 @@ impl App {
             tab: Default::default(),
             crud: pdf_crud,
             config: Config::load(Path::new(CONFIG_FILE)),
-            conversions: vec![],
+            jobs: JobQueue::default(),
             archive: ArchiveTab::default(),
             images: ImagesTab::default(),
             settings: SettingsTab::default(),
         }
     }
 
-    /// True while at least one job has not finished.
-    fn is_filing(&self) -> bool {
-        self.conversions.iter().any(|job| !job.is_finished())
-    }
-
-    /// Draws the list of jobs; removes the finished ones if "Clear finished" was clicked.
-    fn show_job_queue(&mut self, ui: &mut egui::Ui) {
-        if job_queue(ui, &self.conversions) {
-            // `retain` keeps only the jobs for which the closure says true.
-            self.conversions.retain(|job| !job.is_finished());
+    /// Collects news from the jobs once per frame; a letter just filed shows in the
+    /// Archive tab. The queue only reports it; showing it is the window's part.
+    fn check_jobs(&mut self) {
+        if self.jobs.are_freshly_finished_jobs() {
+            self.set_pdfs();
         }
-    }
-
-    /// Collects news from every job; reloads the table if one has just filed a letter.
-    fn check_conversions(&mut self) {
-        let mut filed = false;
-        for job in &mut self.conversions {
-            let was_finished = job.is_finished();
-            job.receive();
-            // Only a job that finished in this frame counts; old ones were handled before.
-            filed |= !was_finished && job.succeeded();
-        }
-        if filed {
-            self.set_pdfs(); // show the new letters in the Archive tab
-        }
-        // A job that worked has nothing more to say: the letter is in the table. A failed
-        // one stays in the queue, with its error, until the user clears it.
-        self.conversions.retain(|job| !job.succeeded());
     }
 }
 

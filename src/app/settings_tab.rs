@@ -38,7 +38,7 @@ impl App {
             // Not while letters are being filed: they would be copied into the old place.
             let move_button = egui::Button::new("Move archive to…");
             if ui
-                .add_enabled(!self.is_filing(), move_button)
+                .add_enabled(!self.jobs.is_filing(), move_button)
                 .on_hover_text("Moves the folder with all its PDFs into an empty folder you choose")
                 .on_disabled_hover_text("Wait until the letter being filed is done")
                 .clicked()
