@@ -15,30 +15,22 @@ use crate::archive_folder_manipulations::{path_change::change_category, rename_f
 use crate::convert::Conversion;
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
-use crate::pdf_pages::render_pages;
 use crate::rescan;
+
+// The PDF shown right of the table lives in `src/app/archive_tab/pdf_view.rs`.
+mod pdf_view;
+// `pub(super) use`: passes these on to `app.rs`, which can then keep importing them from here.
+pub(super) use pdf_view::{PDF_VIEW_SHARE, PdfView};
+use pdf_view::{PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, divider, pdf_view_area};
 
 /// Height of one row of the PDF table, in points.
 const PDF_ROW_HEIGHT: f32 = 60.0;
-/// Width of a PDF page drawn for the area right of the table, in pixels.
-const PDF_VIEW_PIXELS: u32 = 1200;
-/// Share of the Archive tab's width the PDF area right of the table takes at the start.
-pub(super) const PDF_VIEW_SHARE: f32 = 0.5;
-/// How small and how large the PDF area's share can be dragged.
-const PDF_VIEW_SHARE_MIN: f32 = 0.2;
-const PDF_VIEW_SHARE_MAX: f32 = 0.8;
 /// Width of the search box, in points: wide enough to show its whole hint text.
 const SEARCH_WIDTH: f32 = 400.0;
 /// Room left for ".pdf" after the rename box, in points.
 const RENAME_SUFFIX_WIDTH: f32 = 36.0;
 /// Empty space above and below the search box, in points.
 const SEARCH_GAP: f32 = 8.0;
-
-/// The PDF shown in the area right of the table: its name and its pages as textures.
-pub(super) struct PdfView {
-    name: String,
-    pages: Vec<egui::TextureHandle>,
-}
 
 /// What was clicked on a file name; each holds the PDF's full path.
 pub(super) enum PdfClick {
@@ -342,28 +334,6 @@ impl App {
         }
     }
 
-    /// Draws the PDF's pages and keeps them, to show right of the table.
-    /// Prints the error and keeps the PDF shown so far if this one can't be read.
-    fn show_pdf(&mut self, ctx: &egui::Context, path: &Path) {
-        let pages = match render_pages(path, PDF_VIEW_PIXELS) {
-            Ok(pages) => pages,
-            Err(error) => {
-                eprintln!("cannot show {}: {error}", path.display());
-                return;
-            }
-        };
-        let name = file_name(path);
-        let pages = pages
-            .iter()
-            .map(|page| {
-                let size = [page.width() as usize, page.height() as usize];
-                let image = egui::ColorImage::from_rgba_unmultiplied(size, page.as_raw());
-                ctx.load_texture(&name, image, egui::TextureOptions::LINEAR)
-            })
-            .collect();
-        self.pdf_view = Some(PdfView { name, pages });
-    }
-
     /// Renames the PDF being renamed to the typed name (see `rename_pdf.rs`). On success the
     /// table is loaded again; on failure the box stays, with the reason under it.
     pub(super) fn finish_rename(&mut self, ctx: &egui::Context) {
@@ -635,50 +605,6 @@ pub(super) fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<
         ui.colored_label(egui::Color32::RED, &renaming.error);
     }
     click
-}
-
-/// The shown PDF: its name and a Close button, then its pages one under the other,
-/// scrollable and as wide as the area. Returns whether Close was clicked.
-fn pdf_pages_view(ui: &mut egui::Ui, view: &PdfView) -> bool {
-    let close = ui
-        .horizontal(|ui| {
-            ui.strong(&view.name);
-            ui.button("Close").clicked()
-        })
-        .inner;
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for page in &view.pages {
-            // `max_width` shrinks the page to the area's width, keeping its proportions.
-            ui.add(egui::Image::new(page).max_width(ui.available_width()));
-        }
-    });
-    close
-}
-
-/// The area right of the table: the clicked PDF's pages, or a hint if none is shown.
-/// Returns whether Close was clicked.
-fn pdf_view_area(ui: &mut egui::Ui, view: Option<&PdfView>) -> bool {
-    match view {
-        Some(view) => pdf_pages_view(ui, view),
-        None => {
-            ui.weak("Click a file name to see the letter here");
-            false
-        }
-    }
-}
-
-/// The line between the table and the PDF area. Returns how far it was dragged in this
-/// frame, in points (right is positive); 0 when it was not dragged.
-fn divider(ui: &mut egui::Ui) -> f32 {
-    // The whole cell reacts to dragging, not only the thin line drawn in its middle.
-    let response = ui
-        .allocate_response(ui.available_size(), egui::Sense::drag())
-        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-    let rect = response.rect;
-    // Brighter while the mouse is on it or dragging, like other egui widgets.
-    let stroke = ui.style().interact(&response).fg_stroke;
-    ui.painter().vline(rect.center().x, rect.y_range(), stroke);
-    response.drag_delta().x
 }
 
 /// One row of the table. The texts are borrowed from the loaded letter (`'a`); the path
