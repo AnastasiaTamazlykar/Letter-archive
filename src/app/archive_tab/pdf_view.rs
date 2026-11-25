@@ -19,7 +19,7 @@ pub(super) const PDF_VIEW_SHARE_MIN: f32 = 0.2;
 pub(super) const PDF_VIEW_SHARE_MAX: f32 = 0.8;
 
 /// The PDF shown in the area right of the table: its name and its pages as textures.
-pub(in crate::app) struct PdfView {
+pub(super) struct PdfView {
     pub(super) name: String,
     pages: Vec<egui::TextureHandle>,
 }
@@ -45,7 +45,7 @@ impl App {
                 ctx.load_texture(&name, image, egui::TextureOptions::LINEAR)
             })
             .collect();
-        self.pdf_view = Some(PdfView { name, pages });
+        self.archive.pdf_view = Some(PdfView { name, pages });
     }
 }
 

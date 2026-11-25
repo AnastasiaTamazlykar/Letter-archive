@@ -1,9 +1,6 @@
-//! The app window: drop images on it to see them as thumbnails; click one to see it large;
-//! put them in order, tick some and file them as one analyzed PDF.
-
 use crate::convert::Conversion;
 use crate::paths::{DB_FILE, CONFIG_FILE};
-use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
+use crate::pdf_crud::PdfCrud;
 use crate::config::Config;
 use eframe::egui;
 use std::path::Path;
@@ -13,15 +10,13 @@ mod job_queue;
 use job_queue::job_queue;
 // The Archive tab (the table of processed PDFs) lives in `src/app/archive_tab.rs`.
 mod archive_tab;
-// Only the tests use these here: `use super::*` in `tests.rs` picks them up from `app`.
-#[cfg(test)]
-use archive_tab::{EditKind, PdfClick, rename_cell};
-use archive_tab::{PDF_VIEW_SHARE, PdfView, Renaming};
+use archive_tab::ArchiveTab;
 // The Images → PDF tab lives in `src/app/images_tab.rs`.
 mod images_tab;
-use images_tab::{PREVIEW_SHARE, Picture, Preview};
+use images_tab::{ImagesTab, PREVIEW_SHARE};
 // The Settings tab lives in `src/app/settings_tab.rs`.
 mod settings_tab;
+use settings_tab::SettingsTab;
 
 // The tests live in `src/app/tests.rs`.
 #[cfg(test)]
@@ -46,37 +41,19 @@ enum Tab {
 
 /// Everything the window remembers between frames.
 pub struct App {
-    crud: PdfCrud,
     tab: Tab,
-    pdfs: Vec<Document>,
-    hits: Vec<SearchHit>,
-    /// The images added so far. Their order here is the page order in the PDF.
-    pictures: Vec<Picture>,
-    /// The image shown large, if one was clicked.
-    preview: Option<Preview>,
-    /// The PDF shown right of the table, if a file name was clicked.
-    pdf_view: Option<PdfView>,
-    /// The PDF area's share of the Archive tab's width; changed by dragging the divider.
-    pdf_view_share: f32,
-    /// The file name being renamed in the table, if any.
-    renaming: Option<Renaming>,
+
+    // ---- Shared by several tabs ----
+    crud: PdfCrud,
+    config: Config,
     /// The filing jobs, running in the background at the same time or already done, oldest
     /// first. A job that worked leaves the list at once; a failed one stays (to show its
     /// error) until the user clears it.
     conversions: Vec<Conversion>,
-    /// What the last rescan did; shown in the Archive tab only.
-    rescan_status: String,
-    search: String,
-    /// How the table is ordered by letter date.
-    date_order: DateOrder,
-    /// The category the table shows; `None`: all of them.
-    category: Option<String>,
-    /// The choices of the category menu, from the database.
-    categories: Vec<String>,
-    /// The user's settings, read from `SETTINGS_FILE` at the start.
-    config: Config,
-    /// Whether the last change in the Settings tab was saved; shown there.
-    settings_status: String,
+
+    archive: ArchiveTab,
+    images: ImagesTab,
+    settings: SettingsTab,
 }
 
 impl eframe::App for App {
@@ -117,23 +94,13 @@ impl App {
             }
         };
         App {
-            crud: pdf_crud,
             tab: Default::default(),
-            pdfs: vec![],
-            hits: vec![],
-            pictures: vec![],
-            preview: None,
-            pdf_view: None,
-            pdf_view_share: PDF_VIEW_SHARE,
-            renaming: None,
-            conversions: vec![],
-            rescan_status: "".to_string(),
-            search: "".to_string(),
-            date_order: DateOrder::default(),
-            category: None,
-            categories: vec![],
+            crud: pdf_crud,
             config: Config::load(Path::new(CONFIG_FILE)),
-            settings_status: "".to_string(),
+            conversions: vec![],
+            archive: ArchiveTab::default(),
+            images: ImagesTab::default(),
+            settings: SettingsTab::default(),
         }
     }
 

@@ -10,6 +10,14 @@ use super::App;
 use crate::archive_folder_manipulations::move_archive::move_archive;
 use crate::paths::CONFIG_FILE;
 
+/// What the Settings tab remembers between frames; it is `App.settings`.
+/// `Default`: an empty status at the start.
+#[derive(Default)]
+pub(super) struct SettingsTab {
+    /// Whether the last change in the Settings tab was saved; shown there.
+    status: String,
+}
+
 // The Settings tab's part of `App`; the rest of its methods are in `app.rs` and the other tabs.
 impl App {
     /// The Settings tab: the output folder, with a button to choose another one.
@@ -38,7 +46,7 @@ impl App {
                 self.move_archive_to();
             }
         });
-        ui.label(&self.settings_status);
+        ui.label(&self.settings.status);
     }
 
     /// Asks for an empty folder with the macOS Open panel and moves the archive folder
@@ -52,12 +60,12 @@ impl App {
             return;
         };
         if let Err(error) = move_archive(&self.config.output_dir, &target) {
-            self.settings_status = format!("Not moved: {error}");
+            self.settings.status = format!("Not moved: {error}");
             return;
         }
         let place = target.display().to_string();
         self.config.output_dir = target;
-        self.settings_status = match self.config.save(Path::new(CONFIG_FILE)) {
+        self.settings.status = match self.config.save(Path::new(CONFIG_FILE)) {
             Ok(()) => format!("Moved to {place}."),
             // Without the saved setting, the next start would look in the old place.
             Err(error) => format!("Moved to {place}, but the setting was not saved: {error}"),
@@ -78,7 +86,7 @@ impl App {
             return;
         };
         self.config.output_dir = folder;
-        self.settings_status = match self.config.save(Path::new(CONFIG_FILE)) {
+        self.settings.status = match self.config.save(Path::new(CONFIG_FILE)) {
             Ok(()) => "Saved."
                 .to_string(),
             Err(error) => format!("Could not save the settings: {error}"),

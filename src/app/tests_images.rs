@@ -3,7 +3,7 @@
 //! the other window tests in `src/app/tests.rs`.
 
 use super::*;
-use super::images_tab::IMAGES_TOP_HEIGHT;
+use super::images_tab::{IMAGES_TOP_HEIGHT, Picture};
 use super::tests::{test_app, wait_until_done};
 use std::path::PathBuf;
 
@@ -19,15 +19,15 @@ fn ticked_picture(name: &str) -> Picture {
 #[test]
 fn test_create_unticks_all_images_at_once() {
     let mut app = test_app("app_unticks");
-    app.pictures = vec![ticked_picture("a"), ticked_picture("b")];
-    app.pictures[1].selected = false;
+    app.images.pictures = vec![ticked_picture("a"), ticked_picture("b")];
+    app.images.pictures[1].selected = false;
     let images = app.selected_paths();
     assert_eq!(images.len(), 1, "one picture is ticked before Create");
 
     app.start_conversion(&egui::Context::default(), images);
 
     // Right after the click, with the job still running.
-    assert!(app.pictures.iter().all(|picture| !picture.selected));
+    assert!(app.images.pictures.iter().all(|picture| !picture.selected));
     assert!(app.is_filing());
     wait_until_done(&mut app);
 }
@@ -35,11 +35,11 @@ fn test_create_unticks_all_images_at_once() {
 #[test]
 fn test_images_stay_in_the_list_after_create() {
     let mut app = test_app("app_keeps_images");
-    app.pictures = vec![ticked_picture("a"), ticked_picture("b")];
+    app.images.pictures = vec![ticked_picture("a"), ticked_picture("b")];
 
     app.start_conversion(&egui::Context::default(), app.selected_paths());
 
-    assert_eq!(app.pictures.len(), 2, "only the ticks go, not the images");
+    assert_eq!(app.images.pictures.len(), 2, "only the ticks go, not the images");
     wait_until_done(&mut app);
 }
 

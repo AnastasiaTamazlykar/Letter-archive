@@ -30,6 +30,16 @@ const MAX_ZOOM: f32 = 2.0;
 /// the Create button next to the job list. Fixed, so the thumbnails below never move.
 pub(super) const IMAGES_TOP_HEIGHT: f32 = 140.0;
 
+/// What the Images tab remembers between frames; it is `App.images`.
+/// `Default`: no images and no preview at the start.
+#[derive(Default)]
+pub(super) struct ImagesTab {
+    /// The images added so far. Their order here is the page order in the PDF.
+    pub(super) pictures: Vec<Picture>,
+    /// The image shown large, if one was clicked.
+    preview: Option<Preview>,
+}
+
 /// One added image and its thumbnail.
 pub(super) struct Picture {
     pub(super) path: PathBuf,
@@ -126,12 +136,12 @@ impl App {
 
     /// Adds one file if it is an image and not in the list yet, and makes its thumbnail.
     fn add_file(&mut self, ctx: &egui::Context, path: PathBuf) {
-        let known = self.pictures.iter().any(|picture| picture.path == path);
+        let known = self.images.pictures.iter().any(|picture| picture.path == path);
         if !is_image(&path) || known {
             return;
         }
         let thumbnail = make_texture(ctx, &path, THUMBNAIL_PIXELS);
-        self.pictures.push(Picture {
+        self.images.pictures.push(Picture {
             path,
             thumbnail,
             selected: false,
@@ -140,7 +150,7 @@ impl App {
 
     /// The paths of the ticked images, in list order (the order of the PDF's pages).
     pub(super) fn selected_paths(&self) -> Vec<PathBuf> {
-        self.pictures
+        self.images.pictures
             .iter()
             .filter(|picture| picture.selected)
             .map(|picture| picture.path.clone())
@@ -168,7 +178,7 @@ impl App {
     /// The ticks are removed at once, so the next PDF can be picked right away and the
     /// same images are not filed twice by accident.
     pub(super) fn start_conversion(&mut self, ctx: &egui::Context, images: Vec<PathBuf>) {
-        for picture in &mut self.pictures {
+        for picture in &mut self.images.pictures {
             picture.selected = false;
         }
         // `clone` gives the thread its own handle to the window; both point to the same one.
@@ -178,19 +188,19 @@ impl App {
 
     /// Shows how many images there are, then their thumbnails in rows that wrap.
     fn picture_grid(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!("{} images", self.pictures.len()));
+        ui.label(format!("{} images", self.images.pictures.len()));
 
         // The list can't change while we walk through it (Rust forbids changing what is
         // borrowed), so we only note the click here and act on it after the loop.
         let mut click = None;
-        let count = self.pictures.len();
+        let count = self.images.pictures.len();
         // Left to right, wrapping to a new line when full. `Align::Min` lines the cards up
         // at the top; `horizontal_wrapped` would center them, which makes them drift down.
         let rows = egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true);
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.with_layout(rows, |ui| {
                 // `iter_mut`: each card may change its picture (the tick box).
-                for (index, picture) in self.pictures.iter_mut().enumerate() {
+                for (index, picture) in self.images.pictures.iter_mut().enumerate() {
                     match picture_card(ui, picture, index, count) {
                         CardClick::Nothing => {}
                         action => click = Some((index, action)),
@@ -202,14 +212,14 @@ impl App {
         match click {
             Some((index, CardClick::Open)) => self.open_preview(ui.ctx(), index),
             Some((index, CardClick::Remove)) => {
-                self.pictures.remove(index);
+                self.images.pictures.remove(index);
             }
             // `swap` exchanges two neighbours. The `if` guards make sure the neighbour exists.
             Some((index, CardClick::MoveEarlier)) if index > 0 => {
-                self.pictures.swap(index - 1, index);
+                self.images.pictures.swap(index - 1, index);
             }
             Some((index, CardClick::MoveLater)) if index + 1 < count => {
-                self.pictures.swap(index, index + 1);
+                self.images.pictures.swap(index, index + 1);
             }
             _ => {}
         }
@@ -217,8 +227,8 @@ impl App {
 
     /// Loads the image at `index` in a large size and shows it on top of the window.
     fn open_preview(&mut self, ctx: &egui::Context, index: usize) {
-        let path = &self.pictures[index].path;
-        self.preview = make_texture(ctx, path, PREVIEW_PIXELS).map(|texture| Preview {
+        let path = &self.images.pictures[index].path;
+        self.images.preview = make_texture(ctx, path, PREVIEW_PIXELS).map(|texture| Preview {
             name: file_name(path),
             texture,
             view: egui::Rect::ZERO,
@@ -229,7 +239,7 @@ impl App {
     /// a click beside it, or the Esc key.
     pub(super) fn show_preview(&mut self, ctx: &egui::Context, max_size: egui::Vec2) {
         // `&mut`: zooming and dragging change `preview.view`.
-        let Some(preview) = &mut self.preview else {
+        let Some(preview) = &mut self.images.preview else {
             return;
         };
         // A modal sits on top of the window and dims everything behind it.
@@ -240,7 +250,7 @@ impl App {
             close
         });
         if modal.inner || modal.should_close() {
-            self.preview = None;
+            self.images.preview = None;
         }
     }
 }

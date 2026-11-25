@@ -21,10 +21,11 @@ use crate::rescan;
 mod pdf_view;
 // The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
 mod sort_filter;
+// The tests live in `src/app/archive_tab/tests.rs`.
+#[cfg(test)]
+mod tests;
 
-// `pub(super) use`: passes these on to `app.rs`, which can then keep importing them from here.
-pub(super) use pdf_view::{PDF_VIEW_SHARE, PdfView};
-use pdf_view::{PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, divider, pdf_view_area};
+use pdf_view::{PDF_VIEW_SHARE, PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, PdfView, divider, pdf_view_area};
 
 /// Height of one row of the PDF table, in points.
 const PDF_ROW_HEIGHT: f32 = 60.0;
@@ -35,8 +36,51 @@ const RENAME_SUFFIX_WIDTH: f32 = 36.0;
 /// Empty space above and below the search box, in points.
 const SEARCH_GAP: f32 = 8.0;
 
+/// What the Archive tab remembers between frames; it is `App.archive`.
+/// The fields are private: only this module and its children (`pdf_view`, `tests`) use them.
+pub(super) struct ArchiveTab {
+    /// The letters in the table, as the database sorted and filtered them.
+    pdfs: Vec<Document>,
+    /// The letters found by the search; shown instead of `pdfs` while a search is typed.
+    hits: Vec<SearchHit>,
+    search: String,
+    /// How the table is ordered by letter date.
+    date_order: DateOrder,
+    /// The category the table shows; `None`: all of them.
+    category: Option<String>,
+    /// The choices of the category menu, from the database.
+    categories: Vec<String>,
+    /// The cell being edited in the table, if any.
+    renaming: Option<Renaming>,
+    /// The PDF shown right of the table, if a file name was clicked.
+    pdf_view: Option<PdfView>,
+    /// The PDF area's share of the Archive tab's width; changed by dragging the divider.
+    pdf_view_share: f32,
+    /// What the last rescan did; shown in the Archive tab only.
+    rescan_status: String,
+}
+
+// Written by hand, not `#[derive(Default)]`: the derived one would start the PDF area's
+// share at 0.0, so the PDF area would be invisible.
+impl Default for ArchiveTab {
+    fn default() -> Self {
+        ArchiveTab {
+            pdfs: vec![],
+            hits: vec![],
+            search: String::new(),
+            date_order: DateOrder::default(),
+            category: None,
+            categories: vec![],
+            renaming: None,
+            pdf_view: None,
+            pdf_view_share: PDF_VIEW_SHARE,
+            rescan_status: String::new(),
+        }
+    }
+}
+
 /// What was clicked on a file name; each holds the PDF's full path.
-pub(super) enum PdfClick {
+enum PdfClick {
     /// A left click: show it in the area right of the table.
     Show(PathBuf),
     /// "Open" in the right-click menu: open it in the PDF app.
@@ -58,7 +102,7 @@ pub(super) enum PdfClick {
 /// Which cell of a row is a text box.
 /// `Copy` + `PartialEq`: a tiny value that is copied and compared like a number.
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum EditKind {
+enum EditKind {
     /// The file name.
     Name,
     /// The category: the file moves to that folder.
@@ -69,7 +113,7 @@ pub(super) enum EditKind {
 
 /// The edit in progress: a cell of the table (file name, category or letter date) is a text
 /// box while this exists.
-pub(super) struct Renaming {
+struct Renaming {
     /// The PDF's full path; tells the table which row to draw the box in.
     pub(super) path: PathBuf,
     /// The new name without ".pdf", the new category or the new letter date, depending on
@@ -121,15 +165,15 @@ impl Renaming {
 impl App {
     /// Up to `limit` letters, in the chosen order and category; the database sorts and filters.
     fn load_pdfs(&mut self, limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
-        let category = self.category.as_deref();
-        Ok(self.crud.find_letters(self.date_order, category, limit)?)
+        let category = self.archive.category.as_deref();
+        Ok(self.crud.find_letters(self.archive.date_order, category, limit)?)
     }
 
     /// Fixes the paths of PDFs moved inside the output folder and removes letters whose
     /// PDF is gone (see `rescan.rs`), shows what it did, then reloads the table.
     /// Runs at startup and from the Rescan button.
     pub fn rescan(&mut self) {
-        self.rescan_status = match rescan::rescan(&mut self.crud, &self.config.output_dir) {
+        self.archive.rescan_status = match rescan::rescan(&mut self.crud, &self.config.output_dir) {
             Ok(report) => report.summary(),
             Err(error) => format!("Rescan failed: {error}"),
         };
@@ -139,20 +183,20 @@ impl App {
     pub fn set_pdfs(&mut self) {
         match self.load_pdfs(50) {
             Ok(pdfs) => {
-                self.pdfs = pdfs;
+                self.archive.pdfs = pdfs;
             }
             Err(err) => eprintln!("Pdfs were not loaded {}", err),
         }
         match self.crud.categories() {
-            Ok(categories) => self.categories = categories,
+            Ok(categories) => self.archive.categories = categories,
             Err(error) => eprintln!("categories were not loaded: {error}"),
         }
     }
 
     /// Searches the letters for what is typed, in the chosen order and category.
     fn run_search(&mut self) {
-        let category = self.category.as_deref();
-        self.hits = match self.crud.search_letters(&self.search, self.date_order, category) {
+        let category = self.archive.category.as_deref();
+        self.archive.hits = match self.crud.search_letters(&self.archive.search, self.archive.date_order, category) {
             Ok(hits) => hits,
             Err(error) => {
                 eprintln!("search failed: {error}");
@@ -165,7 +209,7 @@ impl App {
     /// search results if a search is shown.
     fn reload_table(&mut self) {
         self.set_pdfs();
-        if !self.search.is_empty() {
+        if !self.archive.search.is_empty() {
             self.run_search();
         }
     }
@@ -194,7 +238,7 @@ impl App {
             {
                 self.rescan();
             }
-            ui.label(&self.rescan_status);
+            ui.label(&self.archive.rescan_status);
         });
         // The title of the table, on a line of its own.
         ui.label("Processed PDFs");
@@ -202,7 +246,7 @@ impl App {
         // The search box gets a row of its own, below the buttons, with space around it.
         ui.add_space(SEARCH_GAP);
         ui.horizontal(|ui| {
-            let too_short = !self.search.is_empty() && self.search.chars().count() < 3;
+            let too_short = !self.archive.search.is_empty() && self.archive.search.chars().count() < 3;
             let search_box = ui
                 .scope(|ui| {
                     if too_short {
@@ -212,7 +256,7 @@ impl App {
                         ui.visuals_mut().override_text_color = Some(egui::Color32::RED);
                     }
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.search)
+                        egui::TextEdit::singleline(&mut self.archive.search)
                             .hint_text("Search document by text… enter at least 3 symbols")
                             .desired_width(SEARCH_WIDTH),
                     )
@@ -222,21 +266,21 @@ impl App {
                 self.run_search();
             }
             //  once search fields is cleared, results are also cleared
-            if self.search.is_empty() {
-                self.hits = vec![];
+            if self.archive.search.is_empty() {
+                self.archive.hits = vec![];
             }
         });
         ui.add_space(SEARCH_GAP);
         // Already sorted and filtered by the database.
         let root = &self.config.output_dir;
-        let rows: Vec<PdfRow> = if !self.search.is_empty() {
-            self.hits.iter().map(|hit| PdfRow::of_hit(hit, root)).collect()
+        let rows: Vec<PdfRow> = if !self.archive.search.is_empty() {
+            self.archive.hits.iter().map(|hit| PdfRow::of_hit(hit, root)).collect()
         } else {
-            self.pdfs.iter().map(|pdf| PdfRow::of_document(pdf, root)).collect()
+            self.archive.pdfs.iter().map(|pdf| PdfRow::of_document(pdf, root)).collect()
         };
         // Kept to see after the table whether its menus changed the order or category.
-        let old_order = self.date_order;
-        let old_category = self.category.clone();
+        let old_order = self.archive.date_order;
+        let old_category = self.archive.category.clone();
 
         // A strip splits the space into cells side by side: the table on the left, the
         // divider, the PDF on the right. `clip`: no cell can draw over another.
@@ -247,44 +291,44 @@ impl App {
         let mut dragged = 0.0;
         StripBuilder::new(ui)
             .clip(true)
-            .size(Size::relative(1.0 - self.pdf_view_share))
+            .size(Size::relative(1.0 - self.archive.pdf_view_share))
             .size(Size::exact(DIVIDER_WIDTH))
             .size(Size::remainder())
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
-                    // `rows` borrows `self.pdfs` (or `self.hits`) while the header's menus
-                    // change `self.date_order` and `self.category`. Rust allows this: they
+                    // `rows` borrows `self.archive.pdfs` (or `self.archive.hits`) while the header's menus
+                    // change `self.archive.date_order` and `self.archive.category`. Rust allows this: they
                     // are different fields of `self`.
                     click = display_pdfs(
                         ui,
                         &rows,
-                        &mut self.date_order,
-                        &mut self.category,
-                        &self.categories,
-                        &mut self.renaming,
+                        &mut self.archive.date_order,
+                        &mut self.archive.category,
+                        &self.archive.categories,
+                        &mut self.archive.renaming,
                     );
                 });
                 strip.cell(|ui| {
                     dragged = divider(ui);
                 });
                 strip.cell(|ui| {
-                    close = pdf_view_area(ui, self.pdf_view.as_ref());
+                    close = pdf_view_area(ui, self.archive.pdf_view.as_ref());
                 });
             });
 
         // Dragging right makes the table wider, so the PDF area's share gets smaller.
         // Only when dragged: with a width of 0, `0.0 / 0.0` would give NaN ("not a number").
         if dragged != 0.0 {
-            self.pdf_view_share = (self.pdf_view_share - dragged / width)
+            self.archive.pdf_view_share = (self.archive.pdf_view_share - dragged / width)
                 .clamp(PDF_VIEW_SHARE_MIN, PDF_VIEW_SHARE_MAX);
         }
 
         if close {
-            self.pdf_view = None;
+            self.archive.pdf_view = None;
         }
         // A new choice in a header menu: ask the database again, and draw the next frame
         // right away so the new rows show without waiting for the mouse to move.
-        if self.date_order != old_order || self.category != old_category {
+        if self.archive.date_order != old_order || self.archive.category != old_category {
             self.reload_table();
             ui.ctx().request_repaint();
         }
@@ -296,23 +340,23 @@ impl App {
 
     /// Acts on a click on a file name: shows the PDF right of the table, opens it in the
     /// PDF app, or shows it in Finder; prints why if that fails.
-    pub(super) fn act_on_pdf_click(&mut self, ctx: &egui::Context, click: PdfClick) {
+    fn act_on_pdf_click(&mut self, ctx: &egui::Context, click: PdfClick) {
         let (path, result) = match click {
             PdfClick::Show(path) => {
                 self.show_pdf(ctx, &path);
                 return;
             }
             PdfClick::Rename(path) => {
-                self.renaming = Some(Renaming::new(path));
+                self.archive.renaming = Some(Renaming::new(path));
                 return;
             }
             PdfClick::RenameCategory(path) => {
-                self.renaming = Some(Renaming::of_category(path, &self.config.output_dir));
+                self.archive.renaming = Some(Renaming::of_category(path, &self.config.output_dir));
                 return;
             }
             PdfClick::EditDate(path) => {
                 let date = self.stored_date(&path).unwrap_or_default(); // "" if none
-                self.renaming = Some(Renaming::of_date(path, date));
+                self.archive.renaming = Some(Renaming::of_date(path, date));
                 return;
             }
             PdfClick::RenameSubmit => {
@@ -320,7 +364,7 @@ impl App {
                 return;
             }
             PdfClick::RenameCancel => {
-                self.renaming = None;
+                self.archive.renaming = None;
                 return;
             }
             PdfClick::Open(path) => {
@@ -339,12 +383,12 @@ impl App {
 
     /// Renames the PDF being renamed to the typed name (see `rename_pdf.rs`). On success the
     /// table is loaded again; on failure the box stays, with the reason under it.
-    pub(super) fn finish_rename(&mut self, ctx: &egui::Context) {
-        let Some(renaming) = &mut self.renaming else {
+    fn finish_rename(&mut self, ctx: &egui::Context) {
+        let Some(renaming) = &mut self.archive.renaming else {
             return;
         };
         let old = renaming.path.clone();
-        // `self.crud`, `self.settings` and `self.renaming` are different fields, so Rust
+        // `self.crud`, `self.settings` and `self.archive.renaming` are different fields, so Rust
         // lets us borrow all three at once.
         // Both functions take the same arguments: pick the one for what is being edited.
         let change = match renaming.kind {
@@ -358,11 +402,11 @@ impl App {
                 renaming.focused = false; // give the box the focus again
             }
             Ok(new) => {
-                self.renaming = None;
+                self.archive.renaming = None;
                 self.reload_table();
                 // The renamed PDF was shown right of the table: show it under its new name.
                 // (A date change keeps the file, so there is nothing to show again.)
-                if new != old && self.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
+                if new != old && self.archive.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
                     self.show_pdf(ctx, &new);
                 }
             }
