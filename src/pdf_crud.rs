@@ -1,28 +1,33 @@
-//! The letter archive: a small SQLite database with one row per PDF letter, holding
-//! a reference to the file and its full text. The text is read from the PDF itself with
-//! Apple's PDFKit, so any PDF with a text layer works. Letters come in through
-//! `analyze_place_pdf`, which asks the LLM first and then calls `insert_letter`.
-//! A full-text index (SQLite FTS5) makes the letters searchable.
-//!
-//! The database is reached through Diesel. Plain rows (`documents`) are read and written
-//! with Diesel's query methods, which the compiler checks against `schema.rs`. The search
-//! index is SQLite's own FTS5, which Diesel doesn't know, so that part stays raw SQL.
-
 use std::{error::Error, path::Path};
 
 use diesel::{
-    connection::SimpleConnection,
     prelude::*,
-    sql_query,
-    sql_types::{BigInt, Bool, Text, Nullable},
+    sql_types::{BigInt, Text, Nullable},
 };
+#[cfg(test)]
+use diesel::{connection::SimpleConnection, sql_query, sql_types::Bool};
 use objc2::AnyThread;
 use objc2_foundation::{NSString, NSURL};
 use objc2_pdf_kit::PDFDocument;
 use sha2::{Digest, Sha256};
 
 use crate::summarize_with_ai::LLMAnswer;
-use crate::{language, schema::documents};
+use crate::constants;
+
+
+table! {
+    documents (id) {
+        id -> BigInt,        // BigInt = i64, matching your `id: i64`
+        file_path -> Text,
+        category -> Text,
+        sha256 -> Text,
+        text -> Text,
+        summary -> Text,
+        language -> Text,
+        created_at -> Text,
+        letter_date -> Nullable<Text>,
+    }
+}
 
 // The tests live in `src/pdf_crud/tests.rs`.
 #[cfg(test)]
@@ -37,6 +42,7 @@ pub use sort_filter::DateOrder;
 /// `IF NOT EXISTS` makes it safe to run every time the database is opened.
 /// `created_at` is filled in by SQLite itself (in UTC).
 /// It must match `schema.rs`, which tells Diesel what this table looks like.
+#[cfg(test)]
 const CREATE_DOCUMENTS: &str = "
     CREATE TABLE IF NOT EXISTS documents (
         id          INTEGER PRIMARY KEY,
@@ -60,6 +66,7 @@ const CREATE_DOCUMENTS: &str = "
 ///
 /// The triggers are small rules inside SQLite: whenever a row of `documents` is added,
 /// changed or deleted, they update the index too, so the Rust code can't forget it.
+#[cfg(test)]
 const CREATE_SEARCH: &str = "
     CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
         text,
@@ -89,9 +96,12 @@ const MIN_WORD_LEN: usize = 3;
 pub struct Document {
     pub id: i64,
     pub file_path: String,
+    #[allow(dead_code)]
     pub sha256: String,
+    #[allow(dead_code)]
     pub text: String,
     pub summary: String,
+    #[allow(dead_code)]
     pub language: String,
     pub letter_date: Option<String>,
     pub category: String,
@@ -116,6 +126,7 @@ pub struct SearchHit {
     pub category: String,
     /// A short piece of the text around the match, with the match in [brackets].
     #[diesel(sql_type = Text)]
+    #[allow(dead_code)]
     pub snippet: String,
     #[diesel(sql_type = Nullable<Text>)]
     pub letter_date: Option<String>,
@@ -135,6 +146,7 @@ pub struct PdfCrud {
 impl PdfCrud {
     /// Opens the database file, creating it if missing, and makes sure the table exists.
     /// The connection closes by itself when the `PdfCrud` goes out of scope (Rust's `Drop`).
+    #[cfg(test)]
     pub fn new(db_file: &Path) -> Result<Self, Box<dyn Error>> {
         let db_file = std::path::absolute(db_file)?;
         let url = db_file.to_str().ok_or("database path is not UTF-8")?;
@@ -174,7 +186,7 @@ impl PdfCrud {
                 documents::sha256.eq(hash),
                 documents::text.eq(text),
                 documents::summary.eq(&answer.summary),
-                documents::language.eq(language::LETTERS.short),
+                documents::language.eq(constants::LETTERS.short),
                 documents::letter_date.eq(iso_letter_date),
                 documents::category.eq(category_of(relative)),
             ))
@@ -267,50 +279,20 @@ impl PdfCrud {
             .optional()
     }
 
-    pub fn find_all(&mut self, limit: i64) -> QueryResult<Vec<Document>> {
-        documents::table
-            .select(Document::as_select())
-            .limit(limit)
-            .get_results(&mut self.db)
-    }
 
-    /// Reads one stored letter back, or `None` if there is no letter with this id.
-    pub fn document(&mut self, id: i64) -> QueryResult<Option<Document>> {
+
+    pub fn text_of(&mut self, id: i64) -> QueryResult<Option<String>> {
         documents::table
-            .find(id) // WHERE id = ?, by the primary key
-            .select(Document::as_select()) // exactly the columns `Document` has
+            .find(id)
+            .select(documents::text)
             .first(&mut self.db)
             .optional()
-    }
-
-    /// Finds the letters that contain every word typed, best match first. A word may be
-    /// part of a longer word. Words under three letters are skipped (see `search_query`).
-    pub fn search(&mut self, words: &str) -> QueryResult<Vec<SearchHit>> {
-        let Some(query) = search_query(words) else {
-            return Ok(Vec::new()); // nothing searchable was typed
-        };
-        // `snippet(..)` cuts out the text around the match: 64 pieces of the index, the
-        // most FTS5 allows; with `trigram` a piece is one letter, so about one line.
-        // `bm25(..)` scores how well a letter matches, lower is better.
-        // Both are FTS5's own SQL functions, so this query is raw SQL. The `AS` names
-        // match the fields of `SearchHit`; `bind` fills in the `?` with the query.
-
-        sql_query(
-            "SELECT documents.id AS id, documents.summary AS  summary,
-            documents.letter_date AS letter_date, documents.file_path AS file_path,
-                    documents.category AS category,
-                    snippet(documents_fts, 0, '[', ']', '…', 64) AS snippet
-             FROM documents_fts JOIN documents ON documents.id = documents_fts.rowid
-             WHERE documents_fts MATCH ?
-             ORDER BY bm25(documents_fts)",
-        )
-        .bind::<Text, _>(query)
-        .load(&mut self.db)
     }
 }
 
 /// Creates the search index if it is missing. A database made before the index existed
 /// already has letters, so the new index is filled with them once (`rebuild`).
+#[cfg(test)]
 fn create_search_index(db: &mut SqliteConnection) -> QueryResult<()> {
     let existed = table_exists(db, "documents_fts")?;
     db.batch_execute(CREATE_SEARCH)?; // `batch_execute`: several statements at once
@@ -322,6 +304,7 @@ fn create_search_index(db: &mut SqliteConnection) -> QueryResult<()> {
 
 /// The one column `table_exists` reads back. Even a single value needs a struct
 /// when it comes from raw SQL, so Diesel knows its name and type.
+#[cfg(test)]
 #[derive(QueryableByName)]
 struct Exists {
     #[diesel(sql_type = Bool)]
@@ -329,6 +312,7 @@ struct Exists {
 }
 
 /// True if the database has a table with this name (`sqlite_master` lists them all).
+#[cfg(test)]
 fn table_exists(db: &mut SqliteConnection, name: &str) -> QueryResult<bool> {
     sql_query("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ?) AS found")
         .bind::<Text, _>(name)

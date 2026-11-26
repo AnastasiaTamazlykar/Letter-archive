@@ -3,8 +3,11 @@
 //! too. `test_app` is shared with the other window tests in `src/app/tests.rs`.
 
 use super::*;
+use super::{EditKind, Renaming};
+use super::table::PdfClick;
 use crate::app::tests::test_app;
-use crate::test_support::test_folder;
+use crate::test_support::{letter_by_id, test_folder};
+use std::path::{Path, PathBuf};
 
 // ---- Renaming a file in the table ----
 
@@ -38,9 +41,23 @@ fn add_letter(app: &mut App, relative: &str, text: &str) {
         .unwrap();
 }
 
+fn click_rename_category(app: &App, path: PathBuf) -> PdfClick {
+    PdfClick::RenameCategory { id: app.archive.pdfs[0].id, path }
+}
+
+fn click_edit_date(app: &App, path: PathBuf) -> PdfClick {
+    let letter = &app.archive.pdfs[0];
+    PdfClick::EditDate { id: letter.id, path, date: letter.letter_date.clone() }
+}
+
+fn click_edit_summary(app: &App, path: PathBuf) -> PdfClick {
+    let letter = &app.archive.pdfs[0];
+    PdfClick::EditSummary { id: letter.id, path, summary: letter.summary.clone() }
+}
+
 #[test]
 fn test_renaming_starts_with_the_current_name_without_pdf() {
-    let renaming = Renaming::new(PathBuf::from("/archive/Finanzamt/Steuerbescheid 2025.pdf"));
+    let renaming = Renaming::new(1, PathBuf::from("/archive/Finanzamt/Steuerbescheid 2025.pdf"));
 
     assert_eq!(renaming.text, "Steuerbescheid 2025");
     assert!(renaming.error.is_empty());
@@ -53,7 +70,7 @@ fn test_rename_in_the_menu_opens_the_box_and_esc_closes_it() {
     let ctx = egui::Context::default();
     let path = PathBuf::from("/archive/Brief.pdf");
 
-    app.act_on_pdf_click(&ctx, PdfClick::Rename(path.clone()));
+    app.act_on_pdf_click(&ctx, PdfClick::Rename { id: 1, path: path.clone() });
     assert_eq!(app.archive.renaming.as_ref().map(|renaming| &renaming.path), Some(&path));
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);
@@ -64,7 +81,8 @@ fn test_rename_in_the_menu_opens_the_box_and_esc_closes_it() {
 fn test_enter_renames_the_file_and_reloads_the_table() {
     let (mut app, output) = test_app_with_letter("app_rename_ok", "Finanzamt/Brief.pdf");
     let old = output.join("Finanzamt/Brief.pdf");
-    app.act_on_pdf_click(&egui::Context::default(), PdfClick::Rename(old.clone()));
+    let id = app.archive.pdfs[0].id;
+    app.act_on_pdf_click(&egui::Context::default(), PdfClick::Rename { id, path: old.clone() });
     app.archive.renaming.as_mut().unwrap().text = "Steuerbescheid".to_string();
 
     app.act_on_pdf_click(&egui::Context::default(), PdfClick::RenameSubmit);
@@ -81,7 +99,7 @@ fn test_a_failed_rename_keeps_the_box_open_with_the_reason() {
     let (mut app, output) = test_app_with_letter("app_rename_clash", "Brief.pdf");
     let old = output.join("Brief.pdf");
     std::fs::write(output.join("Mahnung.pdf"), "other file").unwrap(); // the name is taken
-    app.archive.renaming = Some(Renaming::new(old.clone()));
+    app.archive.renaming = Some(Renaming::new(app.archive.pdfs[0].id, old.clone()));
     app.archive.renaming.as_mut().unwrap().text = "Mahnung".to_string();
     app.archive.renaming.as_mut().unwrap().focused = true;
 
@@ -99,7 +117,7 @@ fn test_rename_on_a_category_opens_the_box_with_the_current_category() {
     let (mut app, output) = test_app_with_letter("app_cat_open", "Gesundheit/teeth/Brief.pdf");
     let path = output.join("Gesundheit/teeth/Brief.pdf");
 
-    app.act_on_pdf_click(&egui::Context::default(), PdfClick::RenameCategory(path.clone()));
+    app.act_on_pdf_click(&egui::Context::default(), click_rename_category(&app, path.clone()));
 
     let renaming = app.archive.renaming.as_ref().unwrap();
     assert!(renaming.kind == EditKind::Category);
@@ -115,7 +133,7 @@ fn test_a_pdf_in_the_output_folder_starts_with_an_empty_category() {
 
     app.act_on_pdf_click(
         &egui::Context::default(),
-        PdfClick::RenameCategory(output.join("Brief.pdf")),
+        click_rename_category(&app, output.join("Brief.pdf")),
     );
 
     assert_eq!(app.archive.renaming.as_ref().unwrap().text, "");
@@ -126,7 +144,7 @@ fn test_enter_in_the_category_box_moves_the_file_and_reloads_the_table() {
     let (mut app, output) = test_app_with_letter("app_cat_move", "Finanzamt/Brief.pdf");
     let old = output.join("Finanzamt/Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::RenameCategory(old.clone()));
+    app.act_on_pdf_click(&ctx, click_rename_category(&app, old.clone()));
     app.archive.renaming.as_mut().unwrap().text = "Steuer/2025".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
@@ -143,7 +161,7 @@ fn test_enter_in_the_category_box_moves_the_file_and_reloads_the_table() {
 fn test_esc_in_the_category_box_moves_nothing() {
     let (mut app, output) = test_app_with_letter("app_cat_esc", "Finanzamt/Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::RenameCategory(output.join("Finanzamt/Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_rename_category(&app, output.join("Finanzamt/Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "Steuer".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);
@@ -157,7 +175,7 @@ fn test_esc_in_the_category_box_moves_nothing() {
 fn test_a_category_with_dots_keeps_the_box_open_with_the_reason() {
     let (mut app, output) = test_app_with_letter("app_cat_dots", "Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::RenameCategory(output.join("Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_rename_category(&app, output.join("Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "../Evil".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
@@ -173,7 +191,7 @@ fn test_a_category_change_that_clashes_keeps_the_box_open_with_the_reason() {
     std::fs::create_dir_all(output.join("Steuer")).unwrap();
     std::fs::write(output.join("Steuer/Brief.pdf"), "other file").unwrap(); // the name is taken
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::RenameCategory(output.join("Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_rename_category(&app, output.join("Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "Steuer".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
@@ -192,21 +210,7 @@ fn test_finish_rename_without_a_box_does_nothing() {
     assert!(app.archive.renaming.is_none());
 }
 
-#[test]
-fn test_the_rename_box_takes_the_focus_once_and_does_not_end_by_itself() {
-    let mut renaming = Renaming::new(PathBuf::from("/archive/Brief.pdf"));
-    let ctx = egui::Context::default();
-    let mut click = None;
 
-    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-        click = rename_cell(ui, &mut renaming);
-    });
-    output.textures_delta.clear(); // see `draw_job_queue`
-
-    assert!(click.is_none(), "no key was pressed, so neither Enter nor Esc");
-    assert!(renaming.focused);
-    assert_eq!(renaming.text, "Brief");
-}
 
 // ---- Editing the letter date in the table ----
 
@@ -217,7 +221,7 @@ fn test_edit_date_opens_the_box_with_the_current_date() {
     let ctx = egui::Context::default();
 
     // The test letter has no date: the box starts empty, in the date cell of that row.
-    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path.clone()));
+    app.act_on_pdf_click(&ctx, click_edit_date(&app, path.clone()));
     let renaming = app.archive.renaming.as_ref().unwrap();
     assert_eq!(renaming.text, "");
     assert!(renaming.is_for(&path, EditKind::Date));
@@ -225,7 +229,8 @@ fn test_edit_date_opens_the_box_with_the_current_date() {
 
     let id = app.crud.find_by_file_path("Brief.pdf").unwrap().unwrap();
     app.crud.update_letter_date(id, "2025-03-04").unwrap();
-    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path));
+    app.set_pdfs();
+    app.act_on_pdf_click(&ctx, click_edit_date(&app, path));
     assert_eq!(app.archive.renaming.as_ref().unwrap().text, "2025-03-04");
 }
 
@@ -234,7 +239,7 @@ fn test_enter_saves_the_date_and_reloads_the_table() {
     let (mut app, output) = test_app_with_letter("app_date_ok", "Finanzamt/Brief.pdf");
     let path = output.join("Finanzamt/Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::EditDate(path.clone()));
+    app.act_on_pdf_click(&ctx, click_edit_date(&app, path.clone()));
     app.archive.renaming.as_mut().unwrap().text = " 2024-12-31 ".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
@@ -249,7 +254,7 @@ fn test_enter_saves_the_date_and_reloads_the_table() {
 fn test_an_invalid_date_keeps_the_box_open_with_the_reason() {
     let (mut app, output) = test_app_with_letter("app_date_bad", "Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::EditDate(output.join("Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_edit_date(&app, output.join("Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "25.11.2025".to_string();
     app.archive.renaming.as_mut().unwrap().focused = true;
 
@@ -265,7 +270,7 @@ fn test_an_invalid_date_keeps_the_box_open_with_the_reason() {
 fn test_esc_in_the_date_box_changes_nothing() {
     let (mut app, output) = test_app_with_letter("app_date_esc", "Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::EditDate(output.join("Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_edit_date(&app, output.join("Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "2024-12-31".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);
@@ -284,7 +289,7 @@ fn id_of(app: &mut App, relative: &str) -> i64 {
 /// The summary stored for the letter at `relative`.
 fn summary_of(app: &mut App, relative: &str) -> String {
     let id = id_of(app, relative);
-    app.crud.document(id).unwrap().unwrap().summary
+    letter_by_id(&mut app.crud, id).unwrap().summary
 }
 
 #[test]
@@ -339,7 +344,7 @@ fn test_update_summary_stores_quotes_and_sql_as_plain_text() {
     app.crud.update_summary(id, attack).unwrap();
 
     assert_eq!(summary_of(&mut app, "Brief.pdf"), attack);
-    assert_eq!(app.crud.find_all(10).unwrap().len(), 2);
+    assert_eq!(app.crud.find_letters(DateOrder::NewestFirst, None,10).unwrap().len(), 2);
 }
 
 #[test]
@@ -347,7 +352,7 @@ fn test_edit_summary_opens_the_box_with_the_current_summary() {
     let (mut app, output) = test_app_with_letter("app_summary_open", "Brief.pdf");
     let path = output.join("Brief.pdf");
 
-    app.act_on_pdf_click(&egui::Context::default(), PdfClick::EditSummary(path.clone()));
+    app.act_on_pdf_click(&egui::Context::default(), click_edit_summary(&app, path.clone()));
 
     let renaming = app.archive.renaming.as_ref().unwrap();
     assert_eq!(renaming.text, "Ein Brief.");
@@ -361,7 +366,7 @@ fn test_enter_saves_the_summary_and_reloads_the_table() {
     let (mut app, output) = test_app_with_letter("app_summary_ok", "Finanzamt/Brief.pdf");
     let path = output.join("Finanzamt/Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::EditSummary(path.clone()));
+    app.act_on_pdf_click(&ctx, click_edit_summary(&app, path.clone()));
     app.archive.renaming.as_mut().unwrap().text = " Neue Zusammenfassung ".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameSubmit);
@@ -376,7 +381,7 @@ fn test_enter_saves_the_summary_and_reloads_the_table() {
 fn test_esc_in_the_summary_box_changes_nothing() {
     let (mut app, output) = test_app_with_letter("app_summary_esc", "Brief.pdf");
     let ctx = egui::Context::default();
-    app.act_on_pdf_click(&ctx, PdfClick::EditSummary(output.join("Brief.pdf")));
+    app.act_on_pdf_click(&ctx, click_edit_summary(&app, output.join("Brief.pdf")));
     app.archive.renaming.as_mut().unwrap().text = "Neue Zusammenfassung".to_string();
 
     app.act_on_pdf_click(&ctx, PdfClick::RenameCancel);

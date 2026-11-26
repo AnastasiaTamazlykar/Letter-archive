@@ -3,7 +3,7 @@
 
 // `super::*` brings in everything `archive.rs` can see, private items included.
 use super::*;
-use crate::test_support::{test_folder, write_pdf};
+use crate::test_support::{letter_by_id, test_folder, write_pdf};
 
 // A method added to `PdfCrud` here, in the tests file: Rust allows an `impl` block in any
 // module of the same crate, and as a child module this one may set the private `db`
@@ -81,7 +81,7 @@ fn test_insert_letter_stores_path_text_and_answer() {
 
     let id = store(&mut archive, &pdf);
 
-    let document = archive.document(id).unwrap().unwrap();
+    let document = letter_by_id(&mut archive, id).unwrap();
     assert_eq!(document.id, id);
     assert_eq!(document.file_path, "brief.pdf"); // the path inside the output folder
     assert_eq!(document.category, ""); // right in the output folder, no subfolder
@@ -174,10 +174,10 @@ fn test_update_file_path_changes_only_that_row() {
     let new_path = Path::new("Finanzamt/moved.pdf"); // inside the output folder
     archive.update_file_path_category(moved_id, new_path).unwrap();
 
-    let moved_row = archive.document(moved_id).unwrap().unwrap();
+    let moved_row = letter_by_id(&mut archive, moved_id).unwrap();
     assert_eq!(moved_row.file_path, "Finanzamt/moved.pdf");
     assert_eq!(moved_row.category, "Finanzamt");
-    assert_eq!(archive.document(other_id).unwrap().unwrap().file_path, "other.pdf");
+    assert_eq!(letter_by_id(&mut archive, other_id).unwrap().file_path, "other.pdf");
 }
 
 /// Two stored letters, both dated 2025-11-25; their ids.
@@ -191,7 +191,7 @@ fn two_letters(archive: &mut PdfCrud, name: &str) -> (i64, i64) {
 
 /// The stored date of letter `id`.
 fn date_of(archive: &mut PdfCrud, id: i64) -> Option<String> {
-    archive.document(id).unwrap().unwrap().letter_date
+    letter_by_id(archive, id).unwrap().letter_date
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn test_update_letter_date_cannot_be_used_for_sql_injection() {
     }
 
     // The table still exists, and both rows still have their date.
-    let rows = archive.find_all(10).unwrap();
+    let rows = archive.find_letters(DateOrder::NewestFirst, None,10).unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row.letter_date.as_deref() == Some("2025-11-25")));
 }
@@ -287,8 +287,8 @@ fn test_delete_letter_removes_the_row_and_its_search_hits() {
     archive.delete_letter(id).unwrap();
 
     // The letter is gone, and so is its text from the search index.
-    assert!(archive.document(id).unwrap().is_none());
-    assert!(archive.search("Müller").unwrap().is_empty());
+    assert!(letter_by_id(&mut archive, id).is_none());
+    assert!(archive.search_letters("Müller", DateOrder::default(), None).unwrap().is_empty());
 }
 
 /// A letter stored in a database file is still there after opening it again.
@@ -304,7 +304,7 @@ fn test_open_keeps_letters_on_disk() {
     let id = store(&mut PdfCrud::new(&db_file).unwrap(), &pdf);
 
     let mut archive = PdfCrud::open(&db_file).unwrap();
-    assert!(archive.document(id).unwrap().is_some());
+    assert!(letter_by_id(&mut archive, id).is_some());
 }
 
 // ── Searching ──
@@ -331,14 +331,14 @@ fn archive_with(name: &str, letters: &[&[&str]]) -> (PdfCrud, Vec<i64>) {
 
 /// The ids of the letters found, in the order `search` gives them.
 fn found(archive: &mut PdfCrud, words: &str) -> Vec<i64> {
-    let hits = archive.search(words).unwrap();
+    let hits = archive.search_letters(words, DateOrder::default(), None).unwrap();
     hits.iter().map(|hit| hit.id).collect()
 }
 
 #[test]
 fn test_search_finds_part_of_a_word() {
     let (mut archive, ids) = archive_with("search_part", &[&TAX_LETTER]);
-    let hits = archive.search("steuer").unwrap();
+    let hits = archive.search_letters("steuer", DateOrder::default(), None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, ids[0]);
     assert!(hits[0].file_path.ends_with("letter_0.pdf"));

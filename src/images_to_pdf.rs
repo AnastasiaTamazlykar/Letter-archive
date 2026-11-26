@@ -15,8 +15,7 @@ use objc2_vision::{
     VNDetectDocumentSegmentationRequest, VNImageRequestHandler, VNRecognizeTextRequest,
     VNRecognizedTextObservation, VNRectangleObservation, VNRequest, VNRequestTextRecognitionLevel,
 };
-
-use crate::language;
+use crate::constants::language_by_code;
 
 // Child modules of `pipeline`: Rust looks for them in `src/pipeline/`.
 // Children may use their parent's private items through `super::`.
@@ -218,7 +217,7 @@ fn to_line(found: &VNRecognizedTextObservation) -> Option<Line> {
 /// Unknown codes are skipped.
 fn vision_languages(lang: &str) -> Vec<Retained<NSString>> {
     lang.split('+')
-        .filter_map(language::by_code)
+        .filter_map(language_by_code)
         .map(|language| NSString::from_str(language.vision))
         .collect()
 }

@@ -1,19 +1,13 @@
-//! Starts the app window. The photo → PDF work lives in `pipeline.rs`.
-
 mod app;
-// The window only lists and adds letters so far; search, `new` and `document` are
-// used by the tests only. `allow` silences their "never used" warnings until it is.
 mod jobs;
-mod store_analyze_pdf;
+mod process_document;
 mod language;
 mod file_system_actions;
 mod open_file;
 mod constants;
-#[allow(dead_code)]
 mod pdf_crud;
 mod images_to_pdf;
 mod rescan;
-mod schema;
 mod config;
 
 mod summarize_with_ai;

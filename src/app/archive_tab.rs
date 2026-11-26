@@ -1,20 +1,14 @@
-//! The Archive tab: the table of processed PDFs, with search, rescan, sort and filter,
-//! editing a file name, category or letter date in place, and the PDF shown next to it.
-//! A child module of `app`: its `impl App` block may use `App`'s private fields.
-//! `pub(super)` marks what `app.rs` (and the tests under it) may use from here.
-
+use eframe::egui;
+use egui_extras::{Size, StripBuilder};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use eframe::egui;
-use egui_extras::{Size, StripBuilder};
-
 use super::{App, DIVIDER_WIDTH, file_name};
-use crate::file_system_actions::{move_file_within_archive::change_category, move_file_within_archive::rename_pdf};
 use crate::jobs::Job;
-use crate::open_file::{open_in_viewer, reveal_in_finder};
-use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};
+use crate::pdf_crud::{DateOrder, Document, SearchHit};
 use crate::rescan;
+
+// Acting on clicks in the table and editing a cell live in `src/app/archive_tab/editing.rs`.
 
 // The PDF shown right of the table lives in `src/app/archive_tab/pdf_view.rs`.
 mod pdf_view;
@@ -26,13 +20,26 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-use pdf_view::{PDF_VIEW_SHARE, PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, PdfView, divider, pdf_view_area};
-use table::{PdfClick, PdfRow, display_pdfs};
+use pdf_view::{
+    PDF_VIEW_SHARE, PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, PdfView, divider, pdf_view_area,
+};
+
+use crate::app::archive_tab::table::PdfClick;
+use crate::file_system_actions::move_file_within_archive::{change_category, rename_pdf};
+use crate::open_file::{open_in_viewer, reveal_in_finder};
+use table::{PdfRow, display_pdfs};
+
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum EditKind {
+    Name,
+    Category,
+    Date,
+    Summary,
+}
 
 /// Width of the search box, in points: wide enough to show its whole hint text.
 const SEARCH_WIDTH: f32 = 400.0;
-/// Room left for ".pdf" after the rename box, in points.
-const RENAME_SUFFIX_WIDTH: f32 = 36.0;
 /// Empty space above and below the search box, in points.
 const SEARCH_GAP: f32 = 8.0;
 
@@ -79,81 +86,14 @@ impl Default for ArchiveTab {
     }
 }
 
-/// Which cell of a row is a text box.
-/// `Copy` + `PartialEq`: a tiny value that is copied and compared like a number.
-#[derive(Clone, Copy, PartialEq)]
-enum EditKind {
-    /// The file name.
-    Name,
-    /// The category: the file moves to that folder.
-    Category,
-    /// The letter date: only the database changes, not the file.
-    Date,
-    /// The summary: only the database changes, not the file.
-    Summary,
-}
-
-/// The edit in progress: a cell of the table (file name, category or letter date) is a text
-/// box while this exists.
-struct Renaming {
-    /// The PDF's full path; tells the table which row to draw the box in.
-    pub(super) path: PathBuf,
-    /// The new name without ".pdf", the new category or the new letter date, depending on
-    /// `kind`; starts as the current one.
-    pub(super) text: String,
-    /// What is edited.
-    pub(super) kind: EditKind,
-    /// Why the last try failed, shown under the box.
-    pub(super) error: String,
-    /// False until the box has been given the keyboard focus (once at the start, and again
-    /// after an error, so the user can keep typing).
-    pub(super) focused: bool,
-}
-
-impl Renaming {
-    pub(super) fn new(path: PathBuf) -> Self {
-        let text = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        Renaming { path, text, kind: EditKind::Name, error: String::new(), focused: false }
-    }
-
-    /// Editing the letter date of the PDF at `path`; the box starts with `date`, its
-    /// current one ("" if it has none).
-    fn of_date(path: PathBuf, date: String) -> Self {
-        Renaming { path, text: date, kind: EditKind::Date, error: String::new(), focused: false }
-    }
-
-    /// Editing the summary of the PDF at `path`; the box starts with `summary`, its current one.
-    fn of_summary(path: PathBuf, summary: String) -> Self {
-        Renaming { path, text: summary, kind: EditKind::Summary, error: String::new(), focused: false }
-    }
-
-    /// Editing the category of the PDF at `path`; the box starts with its current category,
-    /// the folder part of its path inside `output_dir` ("" for a PDF right in it).
-    fn of_category(path: PathBuf, output_dir: &Path) -> Self {
-        let text = path
-            .strip_prefix(output_dir)
-            .ok()
-            .and_then(|relative| relative.parent())
-            .map(|folder| folder.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        Renaming { path, text, kind: EditKind::Category, error: String::new(), focused: false }
-    }
-
-    /// True if this edit is for the `kind` cell of the row of `path`.
-    pub(super) fn is_for(&self, path: &Path, kind: EditKind) -> bool {
-        self.path == path && self.kind == kind
-    }
-}
-
 // The Archive tab's part of `App`; the rest of its methods are in `app.rs`.
 impl App {
     /// Up to `limit` letters, in the chosen order and category; the database sorts and filters.
     fn load_pdfs(&mut self, limit: i64) -> Result<Vec<Document>, Box<dyn Error>> {
         let category = self.archive.category.as_deref();
-        Ok(self.crud.find_letters(self.archive.date_order, category, limit)?)
+        Ok(self
+            .crud
+            .find_letters(self.archive.date_order, category, limit)?)
     }
 
     /// Fixes the paths of PDFs moved inside the output folder and removes letters whose
@@ -172,24 +112,24 @@ impl App {
             Ok(pdfs) => {
                 self.archive.pdfs = pdfs;
             }
-            Err(err) => eprintln!("Pdfs were not loaded {}", err),
+            Err(err) => eprintln!("Documents were not loaded {}", err),
         }
         match self.crud.categories() {
             Ok(categories) => self.archive.categories = categories,
-            Err(error) => eprintln!("categories were not loaded: {error}"),
+            Err(error) => eprintln!("Categories were not loaded: {error}"),
         }
     }
 
     /// Searches the letters for what is typed, in the chosen order and category.
     fn run_search(&mut self) {
         let category = self.archive.category.as_deref();
-        self.archive.hits = match self.crud.search_letters(&self.archive.search, self.archive.date_order, category) {
-            Ok(hits) => hits,
-            Err(error) => {
+        self.archive.hits = self
+            .crud
+            .search_letters(&self.archive.search, self.archive.date_order, category)
+            .unwrap_or_else(|error| {
                 eprintln!("search failed: {error}");
                 vec![]
-            }
-        };
+            });
     }
 
     /// Loads the table again after the order or category changed: the letters, and the
@@ -216,7 +156,10 @@ impl App {
         ui.horizontal(|ui| {
             // Not while letters are being filed: a rescan could remove a letter just added.
             if ui
-                .add_enabled(!self.jobs.is_filing(), egui::Button::new("Rescan archive folder"))
+                .add_enabled(
+                    !self.jobs.is_filing(),
+                    egui::Button::new("Rescan archive folder"),
+                )
                 .on_hover_text(format!(
                     "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
                 ))
@@ -233,7 +176,8 @@ impl App {
         // The search box gets a row of its own, below the buttons, with space around it.
         ui.add_space(SEARCH_GAP);
         ui.horizontal(|ui| {
-            let too_short = !self.archive.search.is_empty() && self.archive.search.chars().count() < 3;
+            let too_short =
+                !self.archive.search.is_empty() && self.archive.search.chars().count() < 3;
             let search_box = ui
                 .scope(|ui| {
                     if too_short {
@@ -261,9 +205,17 @@ impl App {
         // Already sorted and filtered by the database.
         let root = &self.config.output_dir;
         let rows: Vec<PdfRow> = if !self.archive.search.is_empty() {
-            self.archive.hits.iter().map(|hit| PdfRow::of_hit(hit, root)).collect()
+            self.archive
+                .hits
+                .iter()
+                .map(|hit| PdfRow::of_hit(hit, root))
+                .collect()
         } else {
-            self.archive.pdfs.iter().map(|pdf| PdfRow::of_document(pdf, root)).collect()
+            self.archive
+                .pdfs
+                .iter()
+                .map(|pdf| PdfRow::of_document(pdf, root))
+                .collect()
         };
         // Kept to see after the table whether its menus changed the order or category.
         let old_order = self.archive.date_order;
@@ -324,32 +276,27 @@ impl App {
         }
     }
 
-
-    /// Acts on a click on a file name: shows the PDF right of the table, opens it in the
-    /// PDF app, or shows it in Finder; prints why if that fails.
     fn act_on_pdf_click(&mut self, ctx: &egui::Context, click: PdfClick) {
         let (path, result) = match click {
-            PdfClick::Show(path) => {
-                self.show_pdf(ctx, &path);
+            PdfClick::Show { id, path } => {
+                self.show_pdf(ctx, id, &path);
                 return;
             }
-            PdfClick::Rename(path) => {
-                self.archive.renaming = Some(Renaming::new(path));
+            PdfClick::Rename { id, path } => {
+                self.archive.renaming = Some(Renaming::new(id, path));
                 return;
             }
-            PdfClick::RenameCategory(path) => {
-                self.archive.renaming = Some(Renaming::of_category(path, &self.config.output_dir));
+            PdfClick::RenameCategory { id, path } => {
+                self.archive.renaming =
+                    Some(Renaming::of_category(id, path, &self.config.output_dir));
                 return;
             }
-            PdfClick::EditDate(path) => {
-                // `and_then`: no stored letter, or a letter without a date, both give `None`.
-                let date = self.stored_letter(&path).and_then(|letter| letter.letter_date);
-                self.archive.renaming = Some(Renaming::of_date(path, date.unwrap_or_default())); // "" if none
+            PdfClick::EditDate { id, path, date } => {
+                self.archive.renaming = Some(Renaming::of_date(id, path, date.unwrap_or_default()));
                 return;
             }
-            PdfClick::EditSummary(path) => {
-                let summary = self.stored_letter(&path).map(|letter| letter.summary);
-                self.archive.renaming = Some(Renaming::of_summary(path, summary.unwrap_or_default()));
+            PdfClick::EditSummary { id, path, summary } => {
+                self.archive.renaming = Some(Renaming::of_summary(id, path, summary));
                 return;
             }
             PdfClick::RenameSubmit => {
@@ -374,23 +321,26 @@ impl App {
         }
     }
 
-    /// Renames the PDF being renamed to the typed name (see `rename_pdf.rs`). On success the
-    /// table is loaded again; on failure the box stays, with the reason under it.
     fn finish_rename(&mut self, ctx: &egui::Context) {
         let Some(renaming) = &mut self.archive.renaming else {
             return;
         };
+        let id = renaming.id;
         let old = renaming.path.clone();
-        // `self.crud`, `self.settings` and `self.archive.renaming` are different fields, so Rust
-        // lets us borrow all three at once.
-        // Both functions take the same arguments: pick the one for what is being edited.
-        let change = match renaming.kind {
-            EditKind::Name => rename_pdf,
-            EditKind::Category => change_category,
-            EditKind::Date => change_date,
-            EditKind::Summary => change_summary,
+        let output_dir = &self.config.output_dir;
+        let result = match renaming.kind {
+            EditKind::Name => rename_pdf(&mut self.crud, output_dir, &old, &renaming.text),
+            EditKind::Category => change_category(&mut self.crud, output_dir, &old, &renaming.text),
+            EditKind::Date => self
+                .crud
+                .update_letter_date(id, &renaming.text)
+                .map(|()| old.clone()),
+            EditKind::Summary => self
+                .crud
+                .update_summary(id, &renaming.text)
+                .map(|()| old.clone()),
         };
-        match change(&mut self.crud, &self.config.output_dir, &old, &renaming.text) {
+        match result {
             Err(error) => {
                 renaming.error = error.to_string();
                 renaming.focused = false; // give the box the focus again
@@ -400,17 +350,17 @@ impl App {
                 self.reload_table();
                 // The renamed PDF was shown right of the table: show it under its new name.
                 // (A date or summary change keeps the file, so there is nothing to show again.)
-                if new != old && self.archive.pdf_view.as_ref().is_some_and(|view| view.name == file_name(&old)) {
-                    self.show_pdf(ctx, &new);
+                if new != old
+                    && self
+                        .archive
+                        .pdf_view
+                        .as_ref()
+                        .is_some_and(|view| view.name == file_name(&old))
+                {
+                    self.show_pdf(ctx, id, &new);
                 }
             }
         }
-    }
-
-    /// The stored letter whose PDF is at `path`; `None` if it is not in the archive.
-    fn stored_letter(&mut self, path: &Path) -> Option<Document> {
-        let id = letter_id(&mut self.crud, &self.config.output_dir, path).ok()?;
-        self.crud.document(id).ok()?
     }
 
     /// Asks for a PDF with the macOS Open panel, then analyzes and files it in the
@@ -428,70 +378,77 @@ impl App {
     }
 }
 
-/// The id of the stored letter whose PDF is at `path`, a full path inside `output_dir`.
-fn letter_id(crud: &mut PdfCrud, output_dir: &Path, path: &Path) -> Result<i64, Box<dyn Error>> {
-    // The database keeps the path inside the archive folder only.
-    let relative = path.strip_prefix(output_dir)?.to_str().ok_or("path is not UTF-8")?;
-    Ok(crud.find_by_file_path(relative)?.ok_or("this PDF is not in the archive")?)
+struct Renaming {
+    id: i64,
+    path: PathBuf,
+    text: String,
+    kind: EditKind,
+    error: String,
+    focused: bool,
 }
 
-/// Saves `date` as the letter date of the PDF at `path`. Takes the same arguments and
-/// returns the same as `rename_pdf` and `change_category`, so `finish_rename` can use any
-/// of the three; the PDF stays where it is, so it returns `path` itself.
-fn change_date(
-    crud: &mut PdfCrud,
-    output_dir: &Path,
-    path: &Path,
-    date: &str,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let id = letter_id(crud, output_dir, path)?;
-    crud.update_letter_date(id, date)?;
-    Ok(path.to_path_buf())
-}
-
-/// Saves `summary` as the summary of the PDF at `path`. The same arguments and result as
-/// `change_date`, so `finish_rename` can pick it the same way.
-fn change_summary(
-    crud: &mut PdfCrud,
-    output_dir: &Path,
-    path: &Path,
-    summary: &str,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let id = letter_id(crud, output_dir, path)?;
-    crud.update_summary(id, summary)?;
-    Ok(path.to_path_buf())
-}
-
-fn rename_cell(ui: &mut egui::Ui, renaming: &mut Renaming) -> Option<PdfClick> {
-    // The text box that replaces the file name or the category while it is edited (".pdf"
-    // follows a file name), with the reason under it if the last try failed. Enter saves,
-    // Esc or a click elsewhere cancels.
-    let mut click = None;
-    ui.horizontal(|ui| {
-        // ".pdf" only follows a file name, not a category.
-        let is_name = renaming.kind == EditKind::Name;
-        let suffix_width = if is_name { RENAME_SUFFIX_WIDTH } else { 0.0 };
-        let width = (ui.available_width() - suffix_width).max(0.0);
-        let name = ui.add(egui::TextEdit::singleline(&mut renaming.text).desired_width(width));
-        if !renaming.focused {
-            name.request_focus(); // so the user can type at once
-            renaming.focused = true;
+impl Renaming {
+    fn new(id: i64, path: PathBuf) -> Self {
+        let text = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Renaming {
+            id,
+            path,
+            text,
+            kind: EditKind::Name,
+            error: String::new(),
+            focused: false,
         }
-        if is_name {
-            ui.label(".pdf");
-        }
-        // Enter, Esc and a click elsewhere all take the focus away from the box;
-        // the key tells them apart.
-        if name.lost_focus() {
-            click = Some(if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                PdfClick::RenameSubmit
-            } else {
-                PdfClick::RenameCancel
-            });
-        }
-    });
-    if !renaming.error.is_empty() {
-        ui.colored_label(egui::Color32::RED, &renaming.error);
     }
-    click
+
+    /// Editing the letter date of the PDF at `path`; the box starts with `date`, its
+    /// current one ("" if it has none).
+    fn of_date(id: i64, path: PathBuf, date: String) -> Self {
+        Renaming {
+            id,
+            path,
+            text: date,
+            kind: EditKind::Date,
+            error: String::new(),
+            focused: false,
+        }
+    }
+
+    /// Editing the summary of the PDF at `path`; the box starts with `summary`, its current one.
+    fn of_summary(id: i64, path: PathBuf, summary: String) -> Self {
+        Renaming {
+            id,
+            path,
+            text: summary,
+            kind: EditKind::Summary,
+            error: String::new(),
+            focused: false,
+        }
+    }
+
+    /// Editing the category of the PDF at `path`; the box starts with its current category,
+    /// the folder part of its path inside `output_dir` ("" for a PDF right in it).
+    fn of_category(id: i64, path: PathBuf, output_dir: &Path) -> Self {
+        let text = path
+            .strip_prefix(output_dir)
+            .ok()
+            .and_then(|relative| relative.parent())
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Renaming {
+            id,
+            path,
+            text,
+            kind: EditKind::Category,
+            error: String::new(),
+            focused: false,
+        }
+    }
+
+    /// True if this edit is for the `kind` cell of the row of `path`.
+    fn is_for(&self, path: &Path, kind: EditKind) -> bool {
+        self.path == path && self.kind == kind
+    }
 }

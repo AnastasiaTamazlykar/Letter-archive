@@ -36,7 +36,7 @@ pub(super) struct PdfView {
 impl App {
     /// Draws the PDF's pages and keeps them, to show right of the table.
     /// Prints the error and keeps the PDF shown so far if this one can't be read.
-    pub(super) fn show_pdf(&mut self, ctx: &egui::Context, path: &Path) {
+    pub(super) fn show_pdf(&mut self, ctx: &egui::Context, id: i64, path: &Path) {
         let pages = match render_pages(path, PDF_VIEW_PIXELS) {
             Ok(pages) => pages,
             Err(error) => {
@@ -54,7 +54,7 @@ impl App {
             })
             .collect();
         // The text read when the letter was filed; empty if it is not in the archive.
-        let text = self.stored_letter(path).map(|letter| letter.text).unwrap_or_default();
+        let text = self.crud.text_of(id).ok().flatten().unwrap_or_default();
         self.archive.pdf_view = Some(PdfView { name, pages, text, show_text: false });
     }
 }

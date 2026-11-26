@@ -11,14 +11,7 @@ use std::{
 
 use eframe::egui;
 
-use crate::{
-    file_system_actions::utils::free_pdf_path,
-    store_analyze_pdf::analyze_place_pdf,
-    language,
-    constants::{DB_FILE, INPUT_DIR},
-    pdf_crud::PdfCrud,
-    images_to_pdf,
-};
+use crate::{file_system_actions::utils::free_pdf_path, process_document::analyze_place_pdf, constants::{DB_FILE, INPUT_DIR}, pdf_crud::PdfCrud, images_to_pdf, constants};
 
 pub struct Job {
     /// What the job is about, to tell the jobs in the queue apart: "3 image(s)" or a file name.
@@ -221,7 +214,7 @@ pub(crate) fn job_queue(ui: &mut egui::Ui, jobs: &[Job]) -> bool {
 
 fn create_and_file(images: &[PathBuf], output_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let input = new_input_path()?;
-    images_to_pdf::images_to_pdf(images, &input, language::LETTERS.code)?;
+    images_to_pdf::images_to_pdf(images, &input, constants::LETTERS.code)?;
     analyze_place_pdf(&input, output_dir, &mut open_archive()?)
 }
 

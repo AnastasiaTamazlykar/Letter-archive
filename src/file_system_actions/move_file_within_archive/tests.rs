@@ -7,14 +7,14 @@ use std::fs;
 use super::*;
 use crate::{
     pdf_crud,
-    test_support::{setup_archive, store_letter, write_pdf},
+    test_support::{letter_by_id, setup_archive, store_letter, write_pdf},
 };
 use crate::summarize_with_ai::LLMAnswer;
 use crate::test_support::test_folder;
 
 /// The path and the category the database holds for the letter.
 fn stored(crud: &mut PdfCrud, id: i64) -> (String, String) {
-    let letter = crud.document(id).unwrap().unwrap();
+    let letter = letter_by_id(crud, id).unwrap();
     (letter.file_path, letter.category)
 }
 
@@ -222,7 +222,7 @@ fn store(crud: &mut PdfCrud, output: &Path, pdf: &Path, line: &str) -> i64 {
 
 /// The path the database holds for the letter.
 fn stored_path(crud: &mut PdfCrud, id: i64) -> String {
-    crud.document(id).unwrap().unwrap().file_path
+    letter_by_id(crud, id).unwrap().file_path
 }
 
 /// The names of the files in a folder, sorted. Unlike `Path::exists`, this tells "Brief.pdf"
@@ -259,7 +259,7 @@ fn test_rename_keeps_the_folder_and_the_category() {
     let new = rename_pdf(&mut crud, &output, &old, "Kontrolle").unwrap();
 
     assert_eq!(new, output.join("Gesundheit/teeth/Kontrolle.pdf"));
-    let letter = crud.document(id).unwrap().unwrap();
+    let letter = letter_by_id(&mut crud, id).unwrap();
     assert_eq!(letter.file_path, "Gesundheit/teeth/Kontrolle.pdf");
     assert_eq!(letter.category, "Gesundheit/teeth"); // the category is not the full path
 }

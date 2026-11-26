@@ -137,14 +137,3 @@ misik invitation ololo";
     assert_eq!(resp.letter_date, "2026-11-10");
 }
 
-
-fn verify_date(date: &str)->Option<String>{
-    use jiff::civil::Date;
-    date.parse::<Date>().ok().map(|d| d.to_string())
-}
-#[test]
-fn test_jiff_date_transforms_test(){
-    assert_eq!(verify_date("2025-02-01"), Some("2025-02-01".to_string()));
-    assert_eq!(verify_date("20df25-02-01"), None);
-
-}

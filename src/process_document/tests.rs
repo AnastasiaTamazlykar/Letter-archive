@@ -1,6 +1,7 @@
 //! Tests for `file_pdf`. The first two fail before the LLM is asked, so they run
 //! without it; the last one needs the local LLM server running.
 
+use crate::pdf_crud::DateOrder;
 use super::*;
 use crate::test_support::{test_folder, write_pdf};
 
@@ -61,7 +62,7 @@ fn test_file_pdf_without_text_fails_and_copies_nothing() {
 
     assert!(error.to_string().contains("no text"), "got: {error}");
     assert!(files_in(&output).is_empty());
-    assert!(crud.find_all(10).unwrap().is_empty());
+    assert!(crud.find_letters(DateOrder::NewestFirst, None,10).unwrap().is_empty());
 }
 
 /// Needs the local LLM server running (like the tests in summarize_with_ai.rs).
@@ -78,7 +79,7 @@ fn test_file_pdf_copies_and_records() {
     assert!(target.starts_with(&output), "got: {}", target.display());
     assert!(target.exists());
     assert!(input.exists(), "the input is copied, not moved");
-    let stored = crud.find_all(10).unwrap();
+    let stored = crud.find_letters(DateOrder::NewestFirst, None,10).unwrap();
     assert_eq!(stored.len(), 1);
     // The database keeps the path inside the output folder, not the full one.
     assert_eq!(Path::new(&stored[0].file_path), target.strip_prefix(&output).unwrap());
@@ -155,6 +156,6 @@ fn test_two_letters_filed_at_once_do_not_overwrite_each_other() {
 
     assert_ne!(one, two, "both letters went to the same file");
     assert!(one.exists() && two.exists());
-    assert_eq!(PdfCrud::open(&db).unwrap().find_all(10).unwrap().len(), 2);
+    assert_eq!(PdfCrud::open(&db).unwrap().find_letters(DateOrder::NewestFirst, None,10).unwrap().len(), 2);
 }
 

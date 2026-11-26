@@ -9,8 +9,8 @@ use diesel::{
     sql_types::{Nullable, Text},
 };
 
-use super::{Document, PdfCrud, SearchHit, search_query};
-use crate::schema::documents;
+use super::{documents, search_query, Document, PdfCrud, SearchHit};
+
 
 /// How letters are ordered by letter date. Letters without a date always come last.
 /// `Clone, Copy`: a tiny value, so it is copied instead of moved when passed on.

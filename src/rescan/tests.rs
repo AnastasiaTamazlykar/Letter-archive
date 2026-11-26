@@ -7,7 +7,7 @@ use std::fs;
 use super::*;
 use crate::{
     summarize_with_ai::LLMAnswer,
-    test_support::{test_folder, write_pdf},
+    test_support::{letter_by_id, test_folder, write_pdf},
 };
 
 /// A database in this test's folder and an output folder next to it.
@@ -35,7 +35,7 @@ fn store(crud: &mut PdfCrud, output: &Path, pdf: &Path, line: &str) -> i64 {
 
 /// Where the database says the letter's PDF is, inside the output folder.
 fn stored_path(crud: &mut PdfCrud, id: i64) -> PathBuf {
-    PathBuf::from(crud.document(id).unwrap().unwrap().file_path)
+    PathBuf::from(letter_by_id(crud, id).unwrap().file_path)
 }
 
 /// A second letter that stays where it is. The rescan refuses to change anything when not
@@ -59,7 +59,7 @@ fn test_rescan_finds_a_moved_file() {
     assert_eq!(report, Rescan { moved: 1, removed: vec![] });
     assert_eq!(stored_path(&mut crud, id), Path::new("Finanzamt/Brief.pdf"));
     // The folder it is in now is its category.
-    assert_eq!(crud.document(id).unwrap().unwrap().category, "Finanzamt");
+    assert_eq!(letter_by_id(&mut crud, id).unwrap().category, "Finanzamt");
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_rescan_category_is_the_folder_inside_the_output_folder_not_the_full_path
 
     rescan(&mut crud, &output).unwrap();
 
-    let letter = crud.document(id).unwrap().unwrap();
+    let letter = letter_by_id(&mut crud, id).unwrap();
     assert_eq!(letter.file_path, "Gesundheit/teeth/Zahnarzt.pdf");
     assert_eq!(letter.category, "Gesundheit/teeth"); // not "<output folder>/Gesundheit/teeth"
 }
@@ -85,12 +85,12 @@ fn test_rescan_file_moved_back_to_the_output_folder_has_no_category() {
     fs::create_dir_all(output.join("Finanzamt")).unwrap();
     let old = output.join("Finanzamt/Brief.pdf");
     let id = store(&mut crud, &output, &old, "Finanzamt Berlin");
-    assert_eq!(crud.document(id).unwrap().unwrap().category, "Finanzamt");
+    assert_eq!(letter_by_id(&mut crud, id).unwrap().category, "Finanzamt");
     fs::rename(&old, output.join("Brief.pdf")).unwrap();
 
     rescan(&mut crud, &output).unwrap();
 
-    let letter = crud.document(id).unwrap().unwrap();
+    let letter = letter_by_id(&mut crud, id).unwrap();
     assert_eq!(letter.file_path, "Brief.pdf");
     assert_eq!(letter.category, "");
 }
@@ -132,8 +132,8 @@ fn test_rescan_removes_a_letter_whose_file_is_gone() {
 
     assert_eq!(report.removed, ["Gone.pdf"]);
     assert_eq!(report.summary(), "Rescan: 0 moved, 1 removed: Gone.pdf");
-    assert!(crud.document(gone_id).unwrap().is_none());
-    assert!(crud.document(kept_id).unwrap().is_some());
+    assert!(letter_by_id(&mut crud, gone_id).is_none());
+    assert!(letter_by_id(&mut crud, kept_id).is_some());
 }
 
 /// A wrong or missing output folder must never empty the database.
@@ -146,5 +146,5 @@ fn test_rescan_without_output_folder_fails_and_deletes_nothing() {
     let error = rescan(&mut crud, &output).unwrap_err();
 
     assert!(error.to_string().contains("not found"), "got: {error}");
-    assert!(crud.document(id).unwrap().is_some());
+    assert!(letter_by_id(&mut crud, id).is_some());
 }

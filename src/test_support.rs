@@ -10,10 +10,17 @@ use std::{
 use printpdf::{Mm, PdfDocument as NewPdf};
 
 use crate::{
-    pdf_crud::{self, PdfCrud},
+    pdf_crud::{self, DateOrder, Document, PdfCrud},
     images_to_pdf::FONT,
     summarize_with_ai::LLMAnswer,
 };
+
+pub fn letter_by_id(crud: &mut PdfCrud, id: i64) -> Option<Document> {
+    crud.find_letters(DateOrder::default(), None, i64::MAX)
+        .unwrap()
+        .into_iter()
+        .find(|letter| letter.id == id)
+}
 
 /// A database in this test's folder and an empty output folder next to it.
 pub fn setup_archive(name: &str) -> (PdfCrud, PathBuf) {
