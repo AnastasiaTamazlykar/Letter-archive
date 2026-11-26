@@ -22,6 +22,10 @@ pub(super) const PDF_VIEW_SHARE_MAX: f32 = 0.8;
 pub(super) struct PdfView {
     pub(super) name: String,
     pages: Vec<egui::TextureHandle>,
+    /// The letter's text, as stored in the database; shown instead of the pages on "Text".
+    text: String,
+    /// True: show `text`, which can be selected and copied. False: show the pages.
+    show_text: bool,
 }
 
 // The PDF view's part of `App`.
@@ -45,31 +49,43 @@ impl App {
                 ctx.load_texture(&name, image, egui::TextureOptions::LINEAR)
             })
             .collect();
-        self.archive.pdf_view = Some(PdfView { name, pages });
+        // The text read when the letter was filed; empty if it is not in the archive.
+        let text = self.stored_letter(path).map(|letter| letter.text).unwrap_or_default();
+        self.archive.pdf_view = Some(PdfView { name, pages, text, show_text: false });
     }
 }
 
 /// The shown PDF: its name and a Close button, then its pages one under the other,
 /// scrollable and as wide as the area. Returns whether Close was clicked.
-fn pdf_pages_view(ui: &mut egui::Ui, view: &PdfView) -> bool {
+fn pdf_pages_view(ui: &mut egui::Ui, view: &mut PdfView) -> bool {
     let close = ui
         .horizontal(|ui| {
             ui.strong(&view.name);
+            // `selectable_value` sets `show_text` to the given value when clicked, like the tabs.
+            ui.selectable_value(&mut view.show_text, false, "Pages");
+            ui.selectable_value(&mut view.show_text, true, "Text");
             ui.button("Close").clicked()
         })
         .inner;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for page in &view.pages {
-            // `max_width` shrinks the page to the area's width, keeping its proportions.
-            ui.add(egui::Image::new(page).max_width(ui.available_width()));
+        if view.show_text {
+            // `selectable`: drag over the text to select it, ⌘C to copy. `wrap`: the strip
+            // around this area clips its cells, which makes text one truncated row by
+            // default; `wrap` asks for every line, wrapped to the area's width.
+            ui.add(egui::Label::new(&view.text).selectable(true).wrap());
+        } else {
+            for page in &view.pages {
+                // `max_width` shrinks the page to the area's width, keeping its proportions.
+                ui.add(egui::Image::new(page).max_width(ui.available_width()));
+            }
         }
     });
     close
 }
 
 /// The area right of the table: the clicked PDF's pages, or a hint if none is shown.
-/// Returns whether Close was clicked.
-pub(super) fn pdf_view_area(ui: &mut egui::Ui, view: Option<&PdfView>) -> bool {
+/// Returns whether Close was clicked. `&mut`: the Pages/Text switch changes the view.
+pub(super) fn pdf_view_area(ui: &mut egui::Ui, view: Option<&mut PdfView>) -> bool {
     match view {
         Some(view) => pdf_pages_view(ui, view),
         None => {

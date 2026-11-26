@@ -299,7 +299,7 @@ impl App {
                     dragged = divider(ui);
                 });
                 strip.cell(|ui| {
-                    close = pdf_view_area(ui, self.archive.pdf_view.as_ref());
+                    close = pdf_view_area(ui, self.archive.pdf_view.as_mut());
                 });
             });
 
