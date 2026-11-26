@@ -34,7 +34,6 @@ pub(super) enum EditKind {
 
 /// Width of the search box, in points: wide enough to show its whole hint text.
 const SEARCH_WIDTH: f32 = 400.0;
-/// Empty space above and below the search box, in points.
 const SEARCH_GAP: f32 = 8.0;
 
 /// What the Archive tab remembers between frames; it is `App.archive`.
@@ -135,39 +134,7 @@ impl App {
         }
     }
 
-    /// The main page: a + button to add a PDF, and the table of stored PDFs.
-    pub(super) fn archive_tab(&mut self, ui: &mut egui::Ui) {
-        // `display()`: a path as text to show; it may not be valid UTF-8, so no plain `{}`.
-        let output_dir = self.config.output_dir.display().to_string();
-        // The Analyze button has a row of its own. Jobs run side by side, so it is always available.
-        if ui
-            .button("Process new PDF file…")
-            .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
-            .clicked()
-        {
-            self.pick_pdf(ui.ctx());
-        }
-        ui.horizontal(|ui| {
-            // Not while letters are being filed: a rescan could remove a letter just added.
-            if ui
-                .add_enabled(
-                    !self.jobs.is_filing(),
-                    egui::Button::new("Rescan archive folder"),
-                )
-                .on_hover_text(format!(
-                    "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
-                ))
-                .on_disabled_hover_text("Wait until the letters being filed are done")
-                .clicked()
-            {
-                self.rescan();
-            }
-            ui.label(&self.archive.rescan_status);
-        });
-        // The title of the table, on a line of its own.
-        ui.label("Processed PDFs");
-        self.jobs.show(ui);
-        // The search box gets a row of its own, below the buttons, with space around it.
+    fn search_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(SEARCH_GAP);
         ui.horizontal(|ui| {
             let too_short =
@@ -196,6 +163,38 @@ impl App {
             }
         });
         ui.add_space(SEARCH_GAP);
+    }
+
+    /// The main page: a + button to add a PDF, and the table of stored PDFs.
+    pub(super) fn archive_tab(&mut self, ui: &mut egui::Ui) {
+        let output_dir = self.config.output_dir.display().to_string();
+        if ui
+            .button("Process new PDF file…")
+            .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
+            .clicked()
+        {
+            self.pick_pdf(ui.ctx());
+        }
+        ui.horizontal(|ui| {
+            // Not while letters are being filed: a rescan could remove a letter just added.
+            if ui
+                .add_enabled(
+                    !self.jobs.is_filing(),
+                    egui::Button::new("Rescan archive folder"),
+                )
+                .on_hover_text(format!(
+                    "Find moved PDFs in {output_dir}; remove letters whose PDF is gone"
+                ))
+                .on_disabled_hover_text("Wait until the letters being filed are done")
+                .clicked()
+            {
+                self.rescan();
+            }
+            ui.label(&self.archive.rescan_status);
+        });
+        self.jobs.show(ui);
+        ui.label("Processed PDFs");
+        self.search_bar(ui);
         // Already sorted and filtered by the database.
         let root = &self.config.output_dir;
         let rows: Vec<PdfRow> = if !self.archive.search.is_empty() {
