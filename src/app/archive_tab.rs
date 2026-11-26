@@ -4,21 +4,16 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use super::{App, DIVIDER_WIDTH, file_name};
-use crate::jobs::Job;
 use crate::document_crud::{DateOrder, Document, SearchHit};
+use crate::jobs::Job;
 use crate::rescan;
 
-// Acting on clicks in the table and editing a cell live in `src/app/archive_tab/editing.rs`.
-
-// The PDF shown right of the table lives in `src/app/archive_tab/pdf_view.rs`.
 mod pdf_view;
-// The menus that pick the table's order and category live in `src/app/sort_filter.rs`.
 mod sort_filter;
-// The table of letters lives in `src/app/archive_tab/table.rs`.
 mod table;
-// The tests live in `src/app/archive_tab/tests.rs`.
 #[cfg(test)]
 mod tests;
+mod open_file;
 
 use pdf_view::{
     PDF_VIEW_SHARE, PDF_VIEW_SHARE_MAX, PDF_VIEW_SHARE_MIN, PdfView, divider, pdf_view_area,
@@ -26,9 +21,8 @@ use pdf_view::{
 
 use crate::app::archive_tab::table::PdfClick;
 use crate::file_system_actions::move_file_within_archive::{change_category, rename_pdf};
-use crate::open_file::{open_in_viewer, reveal_in_finder};
 use table::{PdfRow, display_pdfs};
-
+use crate::app::archive_tab::open_file::{open_in_viewer, reveal_in_finder};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum EditKind {

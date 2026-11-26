@@ -1,6 +1,3 @@
-//! Hands a stored PDF to macOS: open it in the PDF viewer, or show it in Finder.
-//! Both use the `open` command, as if typed in the Terminal.
-
 use std::io;
 use std::path::Path;
 use std::process::Command;

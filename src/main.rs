@@ -3,7 +3,6 @@ mod jobs;
 mod process_document;
 mod language;
 mod file_system_actions;
-mod open_file;
 mod constants;
 mod document_crud;
 mod images_to_pdf;
