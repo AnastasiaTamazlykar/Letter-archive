@@ -168,13 +168,6 @@ impl App {
     /// The main page: a + button to add a PDF, and the table of stored PDFs.
     pub(super) fn archive_tab(&mut self, ui: &mut egui::Ui) {
         let output_dir = self.config.output_dir.display().to_string();
-        if ui
-            .button("Process new PDF file…")
-            .on_hover_text(format!("Pick a PDF; a copy goes to {output_dir}"))
-            .clicked()
-        {
-            self.pick_pdf(ui.ctx());
-        }
         ui.horizontal(|ui| {
             // Not while letters are being filed: a rescan could remove a letter just added.
             if ui
@@ -192,6 +185,12 @@ impl App {
             }
             ui.label(&self.archive.rescan_status);
         });
+        if ui
+            .button("Process new PDF file…")
+            .clicked()
+        {
+            self.pick_pdf(ui.ctx());
+        }
         self.jobs.show(ui);
         ui.label("Processed PDFs");
         self.search_bar(ui);
