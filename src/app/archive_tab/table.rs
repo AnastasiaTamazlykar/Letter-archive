@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use super::sort_filter::{category_menu, date_order_menu};
 use super::{EditKind, Renaming};
 use crate::app::file_name;
-use crate::pdf_crud::{DateOrder, Document, SearchHit};
+use crate::document_crud::{DateOrder, Document, SearchHit};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder, TableRow};
 const RENAME_SUFFIX_WIDTH: f32 = 36.0;

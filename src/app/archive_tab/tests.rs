@@ -35,7 +35,7 @@ fn add_letter(app: &mut App, relative: &str, text: &str) {
         letter_date: String::new(),
         file_name: "Brief".to_string(),
     };
-    let hash = crate::pdf_crud::file_sha256(&pdf).unwrap();
+    let hash = crate::document_crud::file_sha256(&pdf).unwrap();
     app.crud
         .insert_letter(Path::new(relative), &hash, text, &answer)
         .unwrap();

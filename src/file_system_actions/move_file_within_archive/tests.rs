@@ -6,7 +6,7 @@ use std::fs;
 
 use super::*;
 use crate::{
-    pdf_crud,
+    document_crud,
     test_support::{letter_by_id, setup_archive, store_letter, write_pdf},
 };
 use crate::summarize_with_ai::LLMAnswer;
@@ -47,7 +47,7 @@ fn test_change_path_to_a_taken_path_fails_and_changes_nothing() {
     assert!(first.exists());
     assert_eq!(stored(&mut crud, id).0, "Brief.pdf");
     // The other file was not overwritten: it still holds its own text.
-    assert!(pdf_crud::extract_text(&taken).unwrap().contains("Rundfunkbeitrag"));
+    assert!(document_crud::extract_text(&taken).unwrap().contains("Rundfunkbeitrag"));
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn store(crud: &mut PdfCrud, output: &Path, pdf: &Path, line: &str) -> i64 {
         letter_date: String::new(),
         file_name: "Brief".to_string(),
     };
-    let hash = pdf_crud::file_sha256(pdf).unwrap();
+    let hash = document_crud::file_sha256(pdf).unwrap();
     let relative = pdf.strip_prefix(output).unwrap();
     crud.insert_letter(relative, &hash, line, &answer).unwrap()
 }
@@ -292,7 +292,7 @@ fn test_rename_to_an_existing_name_fails_and_changes_nothing() {
     assert_eq!(stored_path(&mut crud, first_id), "Brief.pdf");
     assert_eq!(stored_path(&mut crud, second_id), "Mahnung.pdf");
     // The other file was not overwritten: it still holds its own text.
-    assert!(pdf_crud::extract_text(&second).unwrap().contains("Rundfunkbeitrag"));
+    assert!(document_crud::extract_text(&second).unwrap().contains("Rundfunkbeitrag"));
 }
 
 #[test]

@@ -10,7 +10,7 @@ use std::{
 
 use crate::file_system_actions::utils::collect_pdf_files;
 use crate::
-pdf_crud::{self, PdfCrud, StoredFile};
+document_crud::{self, PdfCrud, StoredFile};
 
 // The tests live in `src/rescan/tests.rs`.
 #[cfg(test)]
@@ -102,7 +102,7 @@ fn hash_unknown_pdfs(
             continue;
         }
         // `entry(..).or_insert(..)` adds the path only if this fingerprint is new.
-        by_hash.entry(pdf_crud::file_sha256(&pdf)?).or_insert(pdf);
+        by_hash.entry(document_crud::file_sha256(&pdf)?).or_insert(pdf);
     }
     Ok(by_hash)
 }

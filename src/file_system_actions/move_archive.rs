@@ -8,7 +8,7 @@
 
 use std::{error::Error, fs, io, path::Path};
 
-use crate::pdf_crud::file_sha256;
+use crate::document_crud::file_sha256;
 
 /// The file Finder leaves in a folder it has shown; it doesn't make a folder "not empty".
 const FINDER_FILE: &str = ".DS_Store";

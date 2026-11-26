@@ -11,7 +11,7 @@ use std::{
 
 use eframe::egui;
 
-use crate::{file_system_actions::utils::free_pdf_path, process_document::analyze_place_pdf, constants::{DB_FILE, INPUT_DIR}, pdf_crud::PdfCrud, images_to_pdf, constants};
+use crate::{file_system_actions::utils::free_pdf_path, process_document::analyze_place_pdf, constants::{DB_FILE, INPUT_DIR}, document_crud::PdfCrud, images_to_pdf, constants};
 
 pub struct Job {
     /// What the job is about, to tell the jobs in the queue apart: "3 image(s)" or a file name.

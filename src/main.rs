@@ -5,7 +5,7 @@ mod language;
 mod file_system_actions;
 mod open_file;
 mod constants;
-mod pdf_crud;
+mod document_crud;
 mod images_to_pdf;
 mod rescan;
 mod config;

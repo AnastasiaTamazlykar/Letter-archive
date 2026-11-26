@@ -11,7 +11,7 @@ use std::{
 
 use crate::file_system_actions::utils::{scan_folders, safe_file_name, free_pdf_path};
 use crate::{
-    pdf_crud::{self, PdfCrud},
+    document_crud::{self, PdfCrud},
     summarize_with_ai::ask_model,
 };
 
@@ -32,11 +32,11 @@ pub fn analyze_place_pdf(
     output_dir: &Path,
     crud: &mut PdfCrud,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let hash = pdf_crud::file_sha256(input)?;
+    let hash = document_crud::file_sha256(input)?;
     if let Some(id) = crud.find_by_hash(&hash)? {
         return Err(format!("already in the archive (#{id})").into());
     }
-    let text = pdf_crud::extract_text(input)?;
+    let text = document_crud::extract_text(input)?;
     let folders = scan_folders(output_dir)?;
     let answer = ask_model(&text, &folders)?; // nothing is written before the LLM has answered
 

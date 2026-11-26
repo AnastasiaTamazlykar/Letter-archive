@@ -28,7 +28,7 @@ fn store(crud: &mut PdfCrud, output: &Path, pdf: &Path, line: &str) -> i64 {
         letter_date: String::new(),
         file_name: "Brief".to_string(),
     };
-    let hash = pdf_crud::file_sha256(pdf).unwrap();
+    let hash = document_crud::file_sha256(pdf).unwrap();
     let relative = pdf.strip_prefix(output).unwrap();
     crud.insert_letter(relative, &hash, line, &answer).unwrap()
 }

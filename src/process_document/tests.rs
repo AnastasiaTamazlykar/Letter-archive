@@ -1,7 +1,7 @@
 //! Tests for `file_pdf`. The first two fail before the LLM is asked, so they run
 //! without it; the last one needs the local LLM server running.
 
-use crate::pdf_crud::DateOrder;
+use crate::document_crud::DateOrder;
 use super::*;
 use crate::test_support::{test_folder, write_pdf};
 
@@ -34,7 +34,7 @@ fn test_file_pdf_already_stored_fails_and_copies_nothing() {
     let output = folder.join("output");
     let mut crud = new_crud(&folder);
     // Store the same bytes by hand first, so no LLM is needed.
-    let hash = pdf_crud::file_sha256(&input).unwrap();
+    let hash = document_crud::file_sha256(&input).unwrap();
     let answer = crate::summarize_with_ai::LLMAnswer {
         folder: Some("Finanzamt".to_string()),
         summary: "Steuerbescheid".to_string(),

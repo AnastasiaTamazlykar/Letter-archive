@@ -2,7 +2,7 @@
 //! category to show. They only change the app's choices; the database does the sorting
 //! and filtering (see `pdf_crud/sort_filter.rs`), and the app reloads the table after.
 
-use crate::pdf_crud::DateOrder;
+use crate::document_crud::DateOrder;
 use eframe::egui;
 
 /// Every date order, in the order the menu shows them.

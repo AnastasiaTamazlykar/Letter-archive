@@ -10,7 +10,7 @@ use std::{
 use printpdf::{Mm, PdfDocument as NewPdf};
 
 use crate::{
-    pdf_crud::{self, DateOrder, Document, PdfCrud},
+    document_crud::{self, DateOrder, Document, PdfCrud},
     images_to_pdf::FONT,
     summarize_with_ai::LLMAnswer,
 };
@@ -41,7 +41,7 @@ pub fn store_letter(crud: &mut PdfCrud, output: &Path, pdf: &Path, line: &str) -
         letter_date: String::new(),
         file_name: "Brief".to_string(),
     };
-    let hash = pdf_crud::file_sha256(pdf).unwrap();
+    let hash = document_crud::file_sha256(pdf).unwrap();
     let relative = pdf.strip_prefix(output).unwrap();
     crud.insert_letter(relative, &hash, line, &answer).unwrap()
 }

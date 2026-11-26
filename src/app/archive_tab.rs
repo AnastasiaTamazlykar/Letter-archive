@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{App, DIVIDER_WIDTH, file_name};
 use crate::jobs::Job;
-use crate::pdf_crud::{DateOrder, Document, SearchHit};
+use crate::document_crud::{DateOrder, Document, SearchHit};
 use crate::rescan;
 
 // Acting on clicks in the table and editing a cell live in `src/app/archive_tab/editing.rs`.
