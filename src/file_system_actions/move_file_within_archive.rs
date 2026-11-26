@@ -7,7 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{pdf_crud::PdfCrud, pdf_name::safe_file_name, store_analyze_pdf::FILING};
+use crate::{pdf_crud::PdfCrud, store_analyze_pdf::FILING};
+use crate::file_system_actions::utils::safe_file_name;
 
 // The tests live in `src/path_change/tests.rs`.
 #[cfg(test)]
@@ -17,7 +18,7 @@ mod tests;
 /// `output_dir` too, like "Finanzamt/Brief.pdf". Missing folders are created. Returns the new
 /// full path. If a file is already there, or the letter is not in the database, it returns an
 /// error and changes nothing.
-pub fn change_path(
+fn change_path(
     crud: &mut PdfCrud,
     output_dir: &Path,
     old: &Path,
@@ -73,5 +74,17 @@ pub fn change_category(
         new_relative.push(safe_file_name(part));
     }
     new_relative.push(old.file_name().ok_or("the PDF has no file name")?);
+    change_path(crud, output_dir, old, &new_relative)
+}
+
+
+pub fn rename_pdf(
+    crud: &mut PdfCrud,
+    output_dir: &Path,
+    old: &Path,
+    new_name: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let relative = old.strip_prefix(output_dir)?;
+    let new_relative = relative.with_file_name(format!("{}.pdf", safe_file_name(new_name)));
     change_path(crud, output_dir, old, &new_relative)
 }

@@ -89,7 +89,7 @@ mod tests {
 
     use super::*;
     // A private function of `pipeline`: allowed, because this module lives inside it.
-    use crate::pipeline::open_image;
+    use crate::images_to_pdf::open_image;
 
     /// Core Image counts rows from the bottom, our pixels count from the top. A picture
     /// that is red on top and blue below must come out the same way round, or every

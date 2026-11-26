@@ -43,7 +43,7 @@ fn collect_folders(dir: &Path, prefix: &str, found: &mut Vec<String>) -> io::Res
 /// Every PDF under `root`, at any depth, sorted. Each path starts with `root`, so for
 /// `root` = "data/pdfs/output" they look like the paths the database stores.
 /// Hidden folders are skipped, as in `scan_folders`. A missing `root` gives an empty list.
-pub fn pdf_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+pub fn collect_pdf_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     if root.is_dir() {
         collect_pdfs(root, &mut found)?;
@@ -75,7 +75,39 @@ fn is_pdf(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
-// Small file, so the tests stay here.
+
+const MAX_NAME_CHARS: usize = 60;
+
+
+pub fn safe_file_name(suggested: &str) -> String {
+    let cleaned: String = suggested
+        .chars()
+        // `matches!` checks a value against a pattern; `|` means "or".
+        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_') { c } else { ' ' })
+        .collect();
+    // `split_whitespace` drops all spaces, `join` puts single ones back between the words.
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let short: String = words.join(" ").chars().take(MAX_NAME_CHARS).collect();
+    let name = short.trim_end(); // cutting may leave a space at the end
+    if name.is_empty() {
+        "file".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// `dir/name.pdf`, or `dir/name 2.pdf`, `dir/name 3.pdf`, … if that file already exists.
+pub fn free_pdf_path(dir: &Path, name: &str) -> PathBuf {
+    let mut path = dir.join(format!("{name}.pdf"));
+    let mut number = 2;
+    while path.exists() {
+        path = dir.join(format!("{name} {number}.pdf"));
+        number += 1;
+    }
+    path
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,7 +148,7 @@ mod tests {
         fs::write(root.join("a.pdf"), "").unwrap();
         fs::write(root.join("Gesundheit/teeth/b.PDF"), "").unwrap();
 
-        let pdfs = pdf_files(&root).unwrap();
+        let pdfs = collect_pdf_files(&root).unwrap();
 
         assert_eq!(pdfs, [root.join("Gesundheit/teeth/b.PDF"), root.join("a.pdf")]);
     }
@@ -130,6 +162,51 @@ mod tests {
         fs::write(root.join(".DS_Store"), "").unwrap();
         fs::write(root.join("Brief.pdf"), "").unwrap();
 
-        assert_eq!(pdf_files(&root).unwrap(), [root.join("Brief.pdf")]);
+        assert_eq!(collect_pdf_files(&root).unwrap(), [root.join("Brief.pdf")]);
+    }
+
+    #[test]
+    fn test_safe_file_name_keeps_a_plain_name() {
+        let name = "2025-11-25 Rundfunkbeitrag Beitragsservice_Köln";
+        assert_eq!(safe_file_name(name), name);
+    }
+
+    #[test]
+    fn test_safe_file_name_removes_slashes_and_odd_characters() {
+        assert_eq!(safe_file_name("Brief: 25/11/2025"), "Brief 25 11 2025");
+        assert_eq!(safe_file_name("../../etc/passwd"), "etc passwd");
+        assert_eq!(safe_file_name("\"Mahnung\".pdf"), "Mahnung pdf");
+    }
+
+    #[test]
+    fn test_safe_file_name_empty_becomes_letter() {
+        assert_eq!(safe_file_name(""), "file");
+        assert_eq!(safe_file_name(" /:. "), "file");
+    }
+
+    #[test]
+    fn test_safe_file_name_cuts_long_names() {
+        let long = "Wort ".repeat(30);
+        let name = safe_file_name(&long);
+        assert!(name.chars().count() <= MAX_NAME_CHARS, "got: {name}");
+        assert!(!name.ends_with(' '), "got: {name:?}");
+    }
+
+    #[test]
+    fn test_free_pdf_path_keeps_a_free_name() {
+        let dir = test_folder("free_name");
+        assert_eq!(free_pdf_path(&dir, "Brief"), dir.join("Brief.pdf"));
+    }
+
+    #[test]
+    fn test_free_pdf_path_adds_a_number_when_taken() {
+        let dir = test_folder("taken_name");
+        std::fs::write(dir.join("Brief.pdf"), "").unwrap();
+        assert_eq!(free_pdf_path(&dir, "Brief"), dir.join("Brief 2.pdf"));
+
+        std::fs::write(dir.join("Brief 2.pdf"), "").unwrap();
+        assert_eq!(free_pdf_path(&dir, "Brief"), dir.join("Brief 3.pdf"));
     }
 }
+
+

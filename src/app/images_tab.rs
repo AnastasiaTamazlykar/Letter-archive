@@ -9,7 +9,7 @@ use eframe::egui;
 use egui_extras::{Size, StripBuilder};
 
 use super::{App, DIVIDER_WIDTH, file_name};
-use crate::{jobs::Job, pipeline};
+use crate::{jobs::Job, images_to_pdf};
 
 /// File endings the pipeline can read, in lowercase.
 const IMAGE_EXTENSIONS: [&str; 4] = ["heic", "png", "jpg", "jpeg"];
@@ -289,7 +289,7 @@ fn zoomable_image(ui: &mut egui::Ui, preview: &mut Preview, size: egui::Vec2) {
 /// as a texture (a picture on the graphics card). Prints the error and returns `None`
 /// if the file can't be read.
 fn make_texture(ctx: &egui::Context, path: &Path, pixels: u32) -> Option<egui::TextureHandle> {
-    let picture = match pipeline::thumbnail(path, pixels) {
+    let picture = match images_to_pdf::thumbnail(path, pixels) {
         Ok(picture) => picture,
         Err(error) => {
             eprintln!("cannot show {}: {error}", path.display());

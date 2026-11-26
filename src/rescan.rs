@@ -8,10 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    folders::pdf_files,
-    pdf_crud::{self, PdfCrud, StoredFile},
-};
+use crate::file_system_actions::utils::collect_pdf_files;
+use crate::
+pdf_crud::{self, PdfCrud, StoredFile};
 
 // The tests live in `src/rescan/tests.rs`.
 #[cfg(test)]
@@ -98,7 +97,7 @@ fn hash_unknown_pdfs(
         .map(|file| output_dir.join(&file.file_path))
         .collect();
     let mut by_hash = HashMap::new();
-    for pdf in pdf_files(output_dir)? {
+    for pdf in collect_pdf_files(output_dir)? {
         if known.contains(pdf.as_path()) {
             continue;
         }

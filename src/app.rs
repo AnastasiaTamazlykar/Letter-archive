@@ -1,5 +1,5 @@
 use crate::jobs::JobQueue;
-use crate::paths::{DB_FILE, CONFIG_FILE};
+use crate::constants::{DB_FILE, CONFIG_FILE};
 use crate::pdf_crud::PdfCrud;
 use crate::config::Config;
 use eframe::egui;

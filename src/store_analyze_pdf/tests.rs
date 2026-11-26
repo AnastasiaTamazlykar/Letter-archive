@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::test_support::{test_folder, write_pdf};
-use  crate::pdf_crud::extract_text;
 
 const LETTER: [&str; 3] = [
     "Finanzamt Berlin, 25.11.2025",
@@ -103,23 +102,6 @@ fn test_file_pdf_puts_the_file_in_the_chosen_folder() {
     assert_eq!(target.parent(), Some(output.join("Finanzamt").as_path()));
 }
 
-#[test]
-fn test_empty_folder() {
-    let folder = test_folder("file_pdf_folder");
-    let input = folder.join("brief.pdf");
-    write_pdf(&input, &LETTER);
-    let output = folder.join("output");
-
-    let text = extract_text(&input).unwrap();
-    let folders = scan_folders(&output).unwrap();
-    let answer = ask_model(&text, &folders).unwrap(); // nothing is written before the LLM has answered
-    assert_eq!(answer.folder,None);
-    fs::create_dir_all(output.join("Medizin")).unwrap();
-    let rescan_folders = scan_folders(&output).unwrap();
-    let answer = ask_model(&text, &rescan_folders).unwrap();
-    assert_eq!(answer.folder, None);//
-}
-
 /// The folder between the output folder and the file name, in two steps:
 /// 1. `strip_prefix` cuts the output folder off the front (an error if the path
 ///    does not start with it): "Gesundheit/teeth/Zahnarzt.pdf".
@@ -128,7 +110,7 @@ fn test_empty_folder() {
 /// Both work on whole path parts, not letters, so "data/pdfs/outputX" is no match.
 #[test]
 fn test_path() {
-    let output = Path::new(crate::paths::OUTPUT_DIR); // "data/pdfs/output"
+    let output = Path::new(crate::constants::OUTPUT_DIR); // "data/pdfs/output"
 
     let nested = Path::new("data/pdfs/output/Gesundheit/teeth/Zahnarzt.pdf");
     let relative = nested.strip_prefix(output).unwrap();

@@ -11,7 +11,7 @@ use printpdf::{Mm, PdfDocument as NewPdf};
 
 use crate::{
     pdf_crud::{self, PdfCrud},
-    pipeline::FONT,
+    images_to_pdf::FONT,
     summarize_with_ai::LLMAnswer,
 };
 

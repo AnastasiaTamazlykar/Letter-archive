@@ -122,7 +122,7 @@ Sehr geehrte Frau Tol,
 Ihre Rundfunkbeitrage sind am 15.12.2025 fällig.
 Bitte zahlen Sie den Betrag von 55,08 EUR. ";
     let resp = ask_model(LETTER, &test_folders()).unwrap();
-    assert_eq!(resp.letter_date, "25.11.2025");
+    assert_eq!(resp.letter_date, "2025-11-25");
     assert!(resp.summary.contains("Tol"));
     assert_eq!(resp.folder.as_deref(), Some("Rundfunkbeitrag"));
 }

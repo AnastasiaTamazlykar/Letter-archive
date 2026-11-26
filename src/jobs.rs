@@ -12,11 +12,12 @@ use std::{
 use eframe::egui;
 
 use crate::{
+    file_system_actions::utils::free_pdf_path,
     store_analyze_pdf::analyze_place_pdf,
     language,
-    paths::{DB_FILE, INPUT_DIR},
+    constants::{DB_FILE, INPUT_DIR},
     pdf_crud::PdfCrud,
-    pdf_name, pipeline,
+    images_to_pdf,
 };
 
 pub struct Job {
@@ -220,7 +221,7 @@ pub(crate) fn job_queue(ui: &mut egui::Ui, jobs: &[Job]) -> bool {
 
 fn create_and_file(images: &[PathBuf], output_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let input = new_input_path()?;
-    pipeline::images_to_pdf(images, &input, language::LETTERS.code)?;
+    images_to_pdf::images_to_pdf(images, &input, language::LETTERS.code)?;
     analyze_place_pdf(&input, output_dir, &mut open_archive()?)
 }
 
@@ -241,7 +242,7 @@ fn new_input_path() -> Result<PathBuf, Box<dyn Error>> {
     fs::create_dir_all(dir)?;
     let now = jiff::ZonedDateTime::now().strftime("%Y-%m-%d_%H-%M-%S").to_string();
     let number = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Ok(pdf_name::free_pdf_path(dir, &format!("{now}_{number}")))
+    Ok(free_pdf_path(dir, &format!("{now}_{number}")))
 }
 
 // Small file, so the tests stay here. They show how the thread and the window talk:
@@ -267,7 +268,7 @@ mod tests {
     #[test]
     fn test_start_reports_a_failure_from_the_thread() {
         let missing = PathBuf::from("/no/such/photo.HEIC");
-        let output = PathBuf::from(crate::paths::OUTPUT_DIR);
+        let output = PathBuf::from(crate::constants::OUTPUT_DIR);
         let mut conversion =
             Job::start_images(vec![missing], output, egui::Context::default());
 
@@ -318,7 +319,7 @@ mod tests {
     fn test_label_names_the_job() {
         // The label tells the jobs in the queue apart: how many images, or the file name.
         let photos = vec![PathBuf::from("/no/such/a.HEIC"), PathBuf::from("/no/such/b.HEIC")];
-        let output = PathBuf::from(crate::paths::OUTPUT_DIR);
+        let output = PathBuf::from(crate::constants::OUTPUT_DIR);
 
         let conversion = Job::start_images(photos, output, egui::Context::default());
 

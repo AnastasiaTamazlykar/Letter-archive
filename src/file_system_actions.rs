@@ -8,5 +8,5 @@
 //! `pub`: other parts of the app may use it.
 
 pub mod move_archive;
-pub mod path_change;
-pub mod rename_file;
+pub mod move_file_within_archive;
+pub mod utils;

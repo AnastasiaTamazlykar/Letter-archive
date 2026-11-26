@@ -7,8 +7,8 @@ use std::path::Path;
 use eframe::egui;
 
 use super::App;
-use crate::archive_folder_manipulations::move_archive::move_archive;
-use crate::paths::CONFIG_FILE;
+use crate::file_system_actions::move_archive::move_archive;
+use crate::constants::CONFIG_FILE;
 
 /// What the Settings tab remembers between frames; it is `App.settings`.
 /// `Default`: an empty status at the start.

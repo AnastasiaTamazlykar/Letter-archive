@@ -5,16 +5,13 @@ mod app;
 // used by the tests only. `allow` silences their "never used" warnings until it is.
 mod jobs;
 mod store_analyze_pdf;
-mod folders;
 mod language;
-mod archive_folder_manipulations;
+mod file_system_actions;
 mod open_file;
-mod paths;
-mod pdf_name;
-mod pdf_pages;
+mod constants;
 #[allow(dead_code)]
 mod pdf_crud;
-mod pipeline;
+mod images_to_pdf;
 mod rescan;
 mod schema;
 mod config;

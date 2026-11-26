@@ -9,10 +9,9 @@ use std::{
     sync::Mutex,
 };
 
+use crate::file_system_actions::utils::{scan_folders, safe_file_name, free_pdf_path};
 use crate::{
-    folders::scan_folders,
     pdf_crud::{self, PdfCrud},
-    pdf_name,
     summarize_with_ai::ask_model,
 };
 
@@ -28,9 +27,6 @@ pub(crate) static FILING: Mutex<()> = Mutex::new(());
 
 /// Files the PDF at `input`: copies it into the folder of `output_dir` the LLM chose
 /// (or `output_dir` itself if none fits) and adds it to the database.
-/// Returns where the copy is. The input file itself is left as it is.
-/// If any step fails (for example the LLM is not running), it returns the error and
-/// leaves no copy and no database row behind.
 pub fn analyze_place_pdf(
     input: &Path,
     output_dir: &Path,
@@ -53,8 +49,8 @@ pub fn analyze_place_pdf(
     // this function ends. A "poisoned" lock (a thread crashed holding it) is still safe to use.
     let _filing = FILING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     fs::create_dir_all(&dir)?;
-    let name = pdf_name::safe_file_name(&answer.file_name);
-    let target = pdf_name::free_pdf_path(&dir, &name);
+    let name = safe_file_name(&answer.file_name);
+    let target = free_pdf_path(&dir, &name);
     // The database keeps only the path inside the archive folder ("Finanzamt/Brief.pdf"),
     // so the archive folder may move. `target` starts with `output_dir`, so this can't
     // fail; it comes before the copy anyway, so a failure would leave no file behind.

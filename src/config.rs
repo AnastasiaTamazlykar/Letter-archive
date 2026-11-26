@@ -9,7 +9,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::OUTPUT_DIR;
+use crate::constants::OUTPUT_DIR;
 
 /// `Serialize, Deserialize`: serde writes it as JSON and reads it back, field by field,
 /// e.g. `{ "output_dir": "data/pdfs/output" }`.

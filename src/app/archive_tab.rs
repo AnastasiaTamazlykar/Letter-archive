@@ -10,7 +10,7 @@ use eframe::egui;
 use egui_extras::{Size, StripBuilder};
 
 use super::{App, DIVIDER_WIDTH, file_name};
-use crate::archive_folder_manipulations::{path_change::change_category, rename_file::rename_pdf};
+use crate::file_system_actions::{move_file_within_archive::change_category, move_file_within_archive::rename_pdf};
 use crate::jobs::Job;
 use crate::open_file::{open_in_viewer, reveal_in_finder};
 use crate::pdf_crud::{DateOrder, Document, PdfCrud, SearchHit};

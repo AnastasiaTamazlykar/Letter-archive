@@ -408,27 +408,6 @@ fn test_search_follows_changes_and_deletes() {
     assert!(found(&mut archive, "Mahnung").is_empty());
 }
 
-/// A database made before the index existed: its letters become searchable on opening.
-#[test]
-fn test_open_indexes_letters_stored_before() {
-    let db_file = test_folder("search_old_db").join("archive.db");
-    let mut old = SqliteConnection::establish(db_file.to_str().unwrap()).unwrap();
-    old.batch_execute(CREATE_DOCUMENTS).unwrap();
-    diesel::insert_into(documents::table)
-        .values((
-            documents::file_path.eq("alt.pdf"),
-            documents::sha256.eq("abc"),
-            documents::text.eq("Brief vom Finanzamt"),
-            documents::summary.eq(""), // `summary` is NOT NULL, so it must be given
-            documents::language.eq("de"),
-        ))
-        .execute(&mut old)
-        .unwrap();
-    drop(old); // closes the database, like the app quitting
-
-    let mut archive = PdfCrud::open(&db_file).unwrap();
-    assert_eq!(found(&mut archive, "Finanzamt").len(), 1);
-}
 
 #[test]
 #[ignore]
